@@ -67,6 +67,9 @@ function task:setOption( arg )
 	paths.mkdir( dirModel )
 	self.opt = opt
 	-- Verification.
+	assert( opt.imageSize >= opt.cropSize )
+	assert( opt.batchSize % opt.seqLength == 0 )
+	assert( opt.numOut > 0 )
 end
 function task:getOption(  )
 	return self.opt
@@ -108,6 +111,13 @@ function task:createDb(  )
 	local numClass = self.dbval.cid2name:size( 1 )
 	self:print( string.format( 'Val: %d videos, %d classes.', numVal, numClass ) )
 	-- Verification.
+	assert( self.dbtr.vid2path:size( 1 ) == self.dbtr.vid2numim:numel(  ) )
+	assert( self.dbtr.vid2path:size( 1 ) == self.dbtr.vid2cid:numel(  ) )
+	assert( self.dbtr.cid2name:size( 1 ) == self.dbtr.vid2cid:max(  ) )
+	assert( self.dbval.vid2path:size( 1 ) == self.dbval.vid2numim:numel(  ) )
+	assert( self.dbval.vid2path:size( 1 ) == self.dbval.vid2cid:numel(  ) )
+	assert( self.dbval.cid2name:size( 1 ) == self.dbval.vid2cid:max(  ) )
+	assert( self.dbtr.cid2name:size( 1 ) == self.dbval.vid2cid:max(  ) )
 end
 function task:getNumVal(  )
 	return self.dbval.vid2numim:numel(  ) * self.opt.seqLength
