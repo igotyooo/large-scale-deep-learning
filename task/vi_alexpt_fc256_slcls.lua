@@ -5,7 +5,7 @@ local task = torch.class( 'TaskManager' )
 -------- INTERFACE FUNCTIONS --------
 -------------------------------------
 function task:__init(  )
-	self.name = 'vi,alexpt,fc256,slcls'
+	self.name = 'vi_alexpt_fc256_slcls'
 	self.opt = {  }
 	self.dbtr = {  }
 	self.dbval = {  }
