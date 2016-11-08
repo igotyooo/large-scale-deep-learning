@@ -447,8 +447,8 @@ function task:loadImage( path )
 end
 function task:normalizeImage( im )
 	for i = 1, 3 do
-		if self.mean == 0 then im[ i ]:add( -self.mean[ i ] ) end
-		if self.std == 0 and self.opt.normalizeStd then im[ i ]:div( self.std[ i ] ) end
+		if self.mean ~= 0 then im[ i ]:add( -self.mean[ i ] ) end
+		if self.std ~= 0 and self.opt.normalizeStd then im[ i ]:div( self.std[ i ] ) end
 	end
 	return im
 end
