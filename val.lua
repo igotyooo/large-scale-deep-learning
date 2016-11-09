@@ -3,16 +3,16 @@ val.inputs = torch.CudaTensor(  )
 val.labels = torch.CudaTensor(  )
 val.netTimer = torch.Timer(  )
 val.dataTimer = torch.Timer(  )
-function val.setOption( opt, numVal )
-	assert( numVal > 0 )
+function val.setOption( opt, numBatchVal )
+	assert( numBatchVal > 0 )
+	assert( numBatchVal % 1 == 0 )
 	assert( opt.batchSize > 0 )
 	assert( opt.numOut > 0 )
 	assert( opt.pathValLog:match( '(.+).log$' ):len(  ) > 0 )
-	val.numVal = numVal
 	val.batchSize = opt.batchSize
 	val.numOut = opt.numOut
 	val.pathValLog = opt.pathValLog
-	val.epochSize = math.floor( numVal / val.batchSize )
+	val.epochSize = numBatchVal
 end
 function val.setModel( modelSet )
 	val.model = modelSet.model

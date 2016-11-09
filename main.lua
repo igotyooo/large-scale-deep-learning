@@ -47,7 +47,7 @@ train.setFunction( task:getFunctionTrain(  ) )
 
 -- Set val.
 val = paths.dofile( 'val.lua' )
-val.setOption( opt, task:getNumVal(  ) )
+val.setOption( opt, task:getNumBatchVal(  ) )
 val.setModel( model )
 val.setDonkey( donkeys )
 val.setFunction( task:getFunctionVal(  ) )

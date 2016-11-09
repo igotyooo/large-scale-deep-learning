@@ -11,6 +11,7 @@ function task:__init(  )
 	self.dbval = {  }
 	self.mean = 0
 	self.std = 0
+	self.numBatchVal = 0
 end
 function task:setOption( arg )
 	assert( self.name == arg[ 2 ] )
@@ -87,9 +88,9 @@ function task:createDb(  )
 		torch.save( self.opt.pathDbTrain, self.dbtr )
 		self:print( 'Done.' )
 	end
-	local numTrain = self.dbtr.vid2path:size( 1 )
+	local numVideo = self.dbtr.vid2path:size( 1 )
 	local numClass = self.dbtr.cid2name:size( 1 )
-	self:print( string.format( 'Train: %d videos, %d classes.', numTrain, numClass ) )
+	self:print( string.format( 'Train: %d videos, %d classes.', numVideo, numClass ) )
 	if paths.filep( self.opt.pathDbVal ) then
 		self:print( 'Load val db.' )
 		self.dbval = torch.load( self.opt.pathDbVal )
@@ -104,9 +105,10 @@ function task:createDb(  )
 		torch.save( self.opt.pathDbVal, self.dbval )
 		self:print( 'Done.' )
 	end
-	local numVal = self.dbval.vid2path:size( 1 )
+	local numVideo = self.dbval.vid2path:size( 1 )
 	local numClass = self.dbval.cid2name:size( 1 )
-	self:print( string.format( 'Val: %d videos, %d classes.', numVal, numClass ) )
+	self:print( string.format( 'Val: %d videos, %d classes.', numVideo, numClass ) )
+	self.numBatchVal = math.floor( numVideo * self.opt.seqLength / self.opt.batchSize )
 	-- Verification.
 	assert( self.dbtr.vid2path:size( 1 ) == self.dbtr.vid2numim:numel(  ) )
 	assert( self.dbtr.vid2path:size( 1 ) == self.dbtr.vid2cid:numel(  ) )
@@ -154,8 +156,8 @@ end
 function task:getOption(  )
 	return self.opt
 end
-function task:getNumVal(  )
-	return self.dbval.vid2numim:numel(  ) * self.opt.seqLength
+function task:getNumBatchVal(  )
+	return self.numBatchVal
 end
 function task:getFunctionTrain(  )
 	return
