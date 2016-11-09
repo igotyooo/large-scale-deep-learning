@@ -140,6 +140,13 @@ function task:getModel(  )
 	modelSet.params = params
 	modelSet.grads = grads
 	modelSet.optims = optims
+	-- Verification
+	assert( #self.opt.learnRate == #modelSet.params )
+	assert( #self.opt.learnRate == #modelSet.grads )
+	assert( #self.opt.learnRate == #modelSet.optims )
+	for g = 1, #modelSet.params do
+		assert( modelSet.params[ g ]:numel(  ) == modelSet.grads[ g ]:numel(  ) )
+	end
 	return modelSet, startEpoch
 end
 function task:print( str )
