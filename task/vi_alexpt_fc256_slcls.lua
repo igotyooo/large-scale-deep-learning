@@ -1,78 +1,47 @@
-require 'image'
 local ffi = require 'ffi'
 local task = torch.class( 'TaskManager' )
--------------------------------------
--------- INTERFACE FUNCTIONS --------
--------------------------------------
+--------------------------------------------
+-------- TASK-INDEPENDENT FUNCTIONS --------
+--------------------------------------------
 function task:__init(  )
 	self.name = 'vi_alexpt_fc256_slcls'
 	self.opt = {  }
 	self.dbtr = {  }
 	self.dbval = {  }
-	self.mean = 0
-	self.std = 0
+	self.inputStat = {  }
+	self.numBatchTrain = 0
 	self.numBatchVal = 0
 end
 function task:setOption( arg )
 	assert( self.name == arg[ 2 ] )
-	local cmd = torch.CmdLine(  )
-	cmd:option( '-task', self.name )
-	-- System.
-	cmd:option( '-numGpu', 4, 'Number of GPUs.' )
-	cmd:option( '-backend', 'cudnn', 'cudnn or nn.' )
-	cmd:option( '-numDonkey', 4, 'Number of donkeys for data loading.' )
-	-- Data. 
-	cmd:option( '-data', 'UCF101', 'Name of dataset defined in "./db/"' )
-	cmd:option( '-imageSize', 240, 'Short side of initial resize.' )
-	cmd:option( '-cropSize', 224, 'Size of random square crop.' )
-	cmd:option( '-keepAspect', 0, '1 for keep, 0 for no.' )
-	cmd:option( '-normalizeStd', 0, '1 for normalize piexel std to 1, 0 for no.' )
-	cmd:option( '-seqLength', 16, 'Number of frames per input video' )
-	cmd:option( '-caffeInput', 1, '1 for caffe input, 0 for no.' )
-	-- Train.
-	cmd:option( '-numEpoch', 32, 'Number of total epochs to run.' )
-	cmd:option( '-epochSize', 2048, 'Number of batches per epoch.' )
-	cmd:option( '-batchSize', 256, 'Frame-level mini-batch size.' )
-	cmd:option( '-learnRate', 1e-3, 'Supports multi-lr for multi-module like "lr1,lr2,lr3".' )
-	cmd:option( '-momentum', 0.9, 'Momentum.' )
-	cmd:option( '-weightDecay', 5e-4, 'Weight decay.' )	
-	cmd:option( '-startFrom', '', 'Path to the initial model. Using it for LR decay is recommended.' )
-	cmd:option( '-numOut', 1, 'Number of outputs from net.' )
-	-- Value processing.
-	local opt = cmd:parse( arg or {  } )
-	opt.normalizeStd = opt.normalizeStd > 0
-	opt.keepAspect = opt.keepAspect > 0
-	opt.caffeInput = opt.caffeInput > 0
-	-- Set dst paths.
-	local dirRoot = paths.concat( gpath.dataout, opt.data )
-	local pathDbTrain = paths.concat( dirRoot, 'dbTrain.t7' )
-	local pathDbVal = paths.concat( dirRoot, 'dbVal.t7' )
-	local pathImStat = paths.concat( dirRoot, 'inputStats.t7' )
-	if opt.caffeInput then pathImStat = pathImStat:match( '(.+).t7$' ) .. 'Caffe.t7' end
-	local ignore = { numGpu=true, backend=true, numDonkey=true, data=true, numEpoch=true, startFrom=true }
-	local dirModel = paths.concat( dirRoot, cmd:string( self.name, opt, ignore ) )
-	if opt.startFrom ~= '' then
-		local baseDir, epoch = opt.startFrom:match( '(.+)/model_(%d+).t7' )
-		dirModel = paths.concat( baseDir, cmd:string( 'model_' .. epoch, opt, ignore ) )
-	end
-	opt.pathDbTrain = pathDbTrain
-	opt.pathDbVal = pathDbVal
-	opt.pathImStat = pathImStat
-	opt.dirModel = dirModel
-	opt.pathModel = paths.concat( opt.dirModel, 'model_%03d.t7' )
-	opt.pathOptim = paths.concat( opt.dirModel, 'optimState_%03d.t7' )
-	opt.pathTrainLog = paths.concat( opt.dirModel, 'train.log' )
-	opt.pathValLog = paths.concat( opt.dirModel, 'val.log' )
-	opt.pathVideoLevelValLog = paths.concat( opt.dirModel, 'video_level_test_of_%03d' )
-	paths.mkdir( dirRoot )
-	paths.mkdir( dirModel )
-	self.opt = opt
-	-- Verification.
-	assert( opt.imageSize >= opt.cropSize )
-	assert( opt.batchSize % opt.seqLength == 0 )
-	assert( opt.numOut > 0 )
+	self.opt = self:parseOption( arg )
+	assert( self.opt.numGpu )
+	assert( self.opt.backend )
+	assert( self.opt.numDonkey )
+	assert( self.opt.data )
+	assert( self.opt.numEpoch )
+	assert( self.opt.epochSize )
+	assert( self.opt.batchSize )
+	assert( self.opt.learnRate )
+	assert( self.opt.momentum )
+	assert( self.opt.weightDecay )
+	assert( self.opt.startFrom )
+	assert( self.opt.dirRoot )
+	assert( self.opt.pathDbTrain )
+	assert( self.opt.pathDbVal )
+	assert( self.opt.pathImStat )
+	assert( self.opt.dirModel )
+	assert( self.opt.pathModel )
+	assert( self.opt.pathOptim )
+	assert( self.opt.pathTrainLog )
+	assert( self.opt.pathValLog )
+	paths.mkdir( self.opt.dirRoot )
+	paths.mkdir( self.opt.dirModel )
 end
-function task:createDb(  )
+function task:getOption(  )
+	return self.opt
+end
+function task:setDb(  )
 	paths.dofile( string.format( '../db/%s.lua', self.opt.data ) )
 	if paths.filep( self.opt.pathDbTrain ) then
 		self:print( 'Load train db.' )
@@ -80,84 +49,38 @@ function task:createDb(  )
 		self:print( 'Done.' )
 	else
 		self:print( 'Create train db.' )
-		self.dbtr.vid2path,
-		self.dbtr.vid2numim,
-		self.dbtr.vid2cid,
-		self.dbtr.cid2name,
-		self.dbtr.frameFormat = genDb( 'train' )
+		self.dbtr = self:createDbTrain(  )
 		torch.save( self.opt.pathDbTrain, self.dbtr )
 		self:print( 'Done.' )
 	end
-	local numVideo = self.dbtr.vid2path:size( 1 )
-	local numClass = self.dbtr.cid2name:size( 1 )
-	self:print( string.format( 'Train: %d videos, %d classes.', numVideo, numClass ) )
 	if paths.filep( self.opt.pathDbVal ) then
 		self:print( 'Load val db.' )
 		self.dbval = torch.load( self.opt.pathDbVal )
 		self:print( 'Done.' )
 	else
 		self:print( 'Create val db.' )
-		self.dbval.vid2path,
-		self.dbval.vid2numim,
-		self.dbval.vid2cid,
-		self.dbval.cid2name,
-		self.dbval.frameFormat = genDb( 'val' )
+		self.dbtr = createDbVal(  )
 		torch.save( self.opt.pathDbVal, self.dbval )
 		self:print( 'Done.' )
 	end
-	local numVideo = self.dbval.vid2path:size( 1 )
-	local numClass = self.dbval.cid2name:size( 1 )
-	self:print( string.format( 'Val: %d videos, %d classes.', numVideo, numClass ) )
-	self.numBatchVal = math.floor( numVideo * self.opt.seqLength / self.opt.batchSize )
-	-- Verification.
-	assert( self.dbtr.vid2path:size( 1 ) == self.dbtr.vid2numim:numel(  ) )
-	assert( self.dbtr.vid2path:size( 1 ) == self.dbtr.vid2cid:numel(  ) )
-	assert( self.dbtr.cid2name:size( 1 ) == self.dbtr.vid2cid:max(  ) )
-	assert( self.dbval.vid2path:size( 1 ) == self.dbval.vid2numim:numel(  ) )
-	assert( self.dbval.vid2path:size( 1 ) == self.dbval.vid2cid:numel(  ) )
-	assert( self.dbval.cid2name:size( 1 ) == self.dbval.vid2cid:max(  ) )
-	assert( self.dbtr.cid2name:size( 1 ) == self.dbval.vid2cid:max(  ) )
+	self.numBatchTrain, self.numBatchVal = self:setNumBatch(  )
+	assert( self.numBatchTrain > 0 )
+	assert( self.numBatchVal > 0 )
 end
-function task:estimateInputStat(  )
+function task:getNumBatch(  )
+	return self.numBatchTrain, self.numBatchVal
+end
+function task:setInputStat(  )
 	if paths.filep( self.opt.pathImStat ) then
-		local meanstd = torch.load( self.opt.pathImStat )
-		self.mean = meanstd.mean
-		self.std = meanstd.std
-		self:print( 'Loaded mean and std.' )
+		self:print( 'Load input data statistics.' )
+		self.inputStat = torch.load( self.opt.pathImStat )
+		self:print( 'Done.' )
 	else
-		local numIm = 10000
-		local batchSize = self.opt.batchSize
-		local seqLength = self.opt.seqLength
-		local numBatch = math.ceil( numIm / batchSize )
-		self.opt.seqLength = 1
-		self:print( string.format( 'Estimate RGB mean and std over %d images.', numIm ) )
-		local meanEstimate = torch.Tensor( 3 ):fill( 0 )
-		local stdEstimate = torch.Tensor( 3 ):fill( 0 )
-		for b = 1, numBatch do
-			local batch = self:getBatchTrain(  )
-			assert( batch:dim(  ) == 4 )
-			self:print( string.format( '%.1f%% (%d/%d)', b * 100 / numBatch, b, numBatch ) )
-			meanEstimate:add( batch:mean( 4 ):mean( 3 ):mean( 1 ):squeeze(  ) )
-			stdEstimate:add( batch:view( batchSize, 3, -1 ):std( 3 ):mean( 1 ):squeeze(  )  )
-		end
-		self.opt.seqLength = seqLength
-		meanEstimate:div( numBatch )
-		stdEstimate:div( numBatch )
-		self.mean = meanEstimate
-		self.std = stdEstimate
-		local cache = { mean = self.mean, std = self.std }
-		torch.save( self.opt.pathImStat, cache )
+		self:print( 'Estimate input data statistics.' )
+		self.inputStat = self:estimateInputStat(  )
+		torch.save( self.opt.pathImStat, self.inputStat )
 		self:print( 'Done.' )
 	end
-end
--------------------------------
--------- GET FUNCTIONS --------
--------------------------------
-function task:getOption(  )
-	return self.opt
-end
-function task:getNumBatchVal(  )
-	return self.numBatchVal
 end
 function task:getFunctionTrain(  )
 	return
@@ -219,9 +142,127 @@ function task:getModel(  )
 	modelSet.optims = optims
 	return modelSet, startEpoch
 end
-------------------------------------
--------- INTERNAL FUNCTIONS --------
-------------------------------------
+function task:print( str )
+	print( 'TASK MANAGER) ' .. str )
+end
+-----------------------------------------
+-------- TASK-SPECIFIC FUNCTIONS --------
+-----------------------------------------
+function task:parseOption( arg )
+	local cmd = torch.CmdLine(  )
+	cmd:option( '-task', self.name )
+	-- System.
+	cmd:option( '-numGpu', 4, 'Number of GPUs.' )
+	cmd:option( '-backend', 'cudnn', 'cudnn or nn.' )
+	cmd:option( '-numDonkey', 4, 'Number of donkeys for data loading.' )
+	-- Data.
+	cmd:option( '-data', 'UCF101', 'Name of dataset defined in "./db/"' )
+	cmd:option( '-imageSize', 240, 'Short side of initial resize.' )
+	cmd:option( '-cropSize', 224, 'Size of random square crop.' )
+	cmd:option( '-keepAspect', 0, '1 for keep, 0 for no.' )
+	cmd:option( '-normalizeStd', 0, '1 for normalize piexel std to 1, 0 for no.' )
+	cmd:option( '-seqLength', 16, 'Number of frames per input video' )
+	cmd:option( '-caffeInput', 1, '1 for caffe input, 0 for no.' )
+	-- Train.
+	cmd:option( '-numEpoch', 32, 'Number of total epochs to run.' )
+	cmd:option( '-epochSize', 2048, 'Number of batches per epoch.' )
+	cmd:option( '-batchSize', 256, 'Frame-level mini-batch size.' )
+	cmd:option( '-learnRate', 1e-3, 'Supports multi-lr for multi-module like "lr1,lr2,lr3".' )
+	cmd:option( '-momentum', 0.9, 'Momentum.' )
+	cmd:option( '-weightDecay', 5e-4, 'Weight decay.' )
+	cmd:option( '-startFrom', '', 'Path to the initial model. Using it for LR decay is recommended.' )
+	cmd:option( '-numOut', 1, 'Number of outputs from net.' )
+	-- Value processing.
+	local opt = cmd:parse( arg or {  } )
+	opt.normalizeStd = opt.normalizeStd > 0
+	opt.keepAspect = opt.keepAspect > 0
+	opt.caffeInput = opt.caffeInput > 0
+	-- Set dst paths.
+	local dirRoot = paths.concat( gpath.dataout, opt.data )
+	local pathDbTrain = paths.concat( dirRoot, 'dbTrain.t7' )
+	local pathDbVal = paths.concat( dirRoot, 'dbVal.t7' )
+	local pathImStat = paths.concat( dirRoot, 'inputStat.t7' )
+	if opt.caffeInput then pathImStat = pathImStat:match( '(.+).t7$' ) .. 'Caffe.t7' end
+	local ignore = { numGpu=true, backend=true, numDonkey=true, data=true, numEpoch=true, startFrom=true }
+	local dirModel = paths.concat( dirRoot, cmd:string( self.name, opt, ignore ) )
+	if opt.startFrom ~= '' then
+		local baseDir, epoch = opt.startFrom:match( '(.+)/model_(%d+).t7' )
+		dirModel = paths.concat( baseDir, cmd:string( 'model_' .. epoch, opt, ignore ) )
+	end
+	opt.dirRoot = dirRoot
+	opt.pathDbTrain = pathDbTrain
+	opt.pathDbVal = pathDbVal
+	opt.pathImStat = pathImStat
+	opt.dirModel = dirModel
+	opt.pathModel = paths.concat( opt.dirModel, 'model_%03d.t7' )
+	opt.pathOptim = paths.concat( opt.dirModel, 'optimState_%03d.t7' )
+	opt.pathTrainLog = paths.concat( opt.dirModel, 'train.log' )
+	opt.pathValLog = paths.concat( opt.dirModel, 'val.log' )
+	-- Verification.
+	assert( opt.imageSize >= opt.cropSize )
+	assert( opt.batchSize % opt.seqLength == 0 )
+	assert( opt.numOut > 0 )
+	return opt
+end
+function task:createDbTrain(  )
+	local dbtr = {  }
+	dbtr.vid2path,
+	dbtr.vid2numim,
+	dbtr.vid2cid,
+	dbtr.cid2name,
+	dbtr.frameFormat = genDb( 'train' )
+	local numVideo = dbtr.vid2path:size( 1 )
+	local numClass = dbtr.cid2name:size( 1 )
+	self:print( string.format( 'Train: %d videos, %d classes.', numVideo, numClass ) )
+	-- Verification.
+	assert( dbtr.vid2path:size( 1 ) == dbtr.vid2numim:numel(  ) )
+	assert( dbtr.vid2path:size( 1 ) == dbtr.vid2cid:numel(  ) )
+	assert( dbtr.cid2name:size( 1 ) == dbtr.vid2cid:max(  ) )
+	return dbtr
+end
+function task:createDbVal(  )
+	local dbval = {  }
+	dbval.vid2path,
+	dbval.vid2numim,
+	dbval.vid2cid,
+	dbval.cid2name,
+	dbval.frameFormat = genDb( 'val' )
+	local numVideo = dbval.vid2path:size( 1 )
+	local numClass = dbval.cid2name:size( 1 )
+	self:print( string.format( 'Val: %d videos, %d classes.', numVideo, numClass ) )
+	-- Verification.
+	assert( dbval.vid2path:size( 1 ) == dbval.vid2numim:numel(  ) )
+	assert( dbval.vid2path:size( 1 ) == dbval.vid2cid:numel(  ) )
+	assert( dbval.cid2name:size( 1 ) == dbval.vid2cid:max(  ) )
+	return dbval
+end
+function task:setNumBatch(  )
+	local seqLength = self.opt.seqLength
+	local batchSize = self.opt.batchSize
+	local numBatchTrain = math.floor( self.dbtr.vid2path:size( 1 ) * seqLength / batchSize )
+	local numBatchVal = math.floor( self.dbval.vid2path:size( 1 ) * seqLength / batchSize )
+	return numBatchTrain, numBatchVal
+end
+function task:estimateInputStat(  )
+	local numIm = 10000
+	local batchSize = self.opt.batchSize
+	local seqLength = self.opt.seqLength
+	local numBatch = math.ceil( numIm / batchSize )
+	self.opt.seqLength = 1
+	local meanEstimate = torch.Tensor( 3 ):fill( 0 )
+	local stdEstimate = torch.Tensor( 3 ):fill( 0 )
+	for b = 1, numBatch do
+		local batch = self:getBatchTrain(  )
+		assert( batch:dim(  ) == 4 )
+		self:print( string.format( '%.1f%% (%d/%d)', b * 100 / numBatch, b, numBatch ) )
+		meanEstimate:add( batch:mean( 4 ):mean( 3 ):mean( 1 ):squeeze(  ) )
+		stdEstimate:add( batch:view( batchSize, 3, -1 ):std( 3 ):mean( 1 ):squeeze(  )  )
+	end
+	self.opt.seqLength = seqLength
+	meanEstimate:div( numBatch )
+	stdEstimate:div( numBatch )
+	return { mean = meanEstimate, std = stdEstimate }
+end
 function task:defineModel(  )
 	require 'loadcaffe'
 	-- Set params.
@@ -333,26 +374,30 @@ function task:getBatchTrain(  )
 	local inputTensor, labelTensor = self:tableToTensor( inputTable, labelTable )
 	return inputTensor, labelTensor
 end
-function task:processImageTrain( path, rw, rh, rf )
-	collectgarbage(  )
-	local input = self:loadImage( path )
-	local iW = input:size( 3 )
-	local iH = input:size( 2 )
-	-- Do random crop.
-	local oW = self.opt.cropSize
-	local oH = self.opt.cropSize
-	local h1 = math.ceil( ( iH - oH ) * rh )
-	local w1 = math.ceil( ( iW - oW ) * rw )
-	if iH == oH then h1 = 0 end
-	if iW == oW then w1 = 0 end
-	local out = image.crop( input, w1, h1, w1 + oW, h1 + oH )
-	assert( out:size( 3 ) == oW )
-	assert( out:size( 2 ) == oH )
-	-- Do horz-flip.
-	if rf > 0.5 then out = image.hflip( out ) end
-	-- Normalize.
-	out = self:normalizeImage( out )
-	return out
+function task:getBatchVal( fidStart )
+	local seqLength = self.opt.seqLength
+	local batchSize = self.opt.batchSize
+	local vidStart = ( fidStart - 1 ) / seqLength + 1
+	local inputTable = {  }
+	local labelTable = {  }
+	local numVideoToSample = batchSize / seqLength
+	local numVideo = self.dbval.vid2path:size( 1 )
+	for v = 1, numVideoToSample do
+		local vid = vidStart + v - 1
+		local vpath = ffi.string( torch.data( self.dbval.vid2path[ vid ] ) )
+		local numFrame = self.dbval.vid2numim[ vid ]
+		local cid = self.dbval.vid2cid[ vid ]
+		local startFrame = torch.random( 1, math.max( 1, numFrame - seqLength + 1 ) )
+		for f = 1, seqLength do
+			local fid = math.min( numFrame, startFrame + f - 1 )
+			local fpath = paths.concat( vpath, string.format( self.dbval.frameFormat, fid ) )
+			local out = self:processImageVal( fpath )
+			table.insert( inputTable, out )
+			table.insert( labelTable, cid )
+		end
+	end
+	local inputTensor, labelTensor = self:tableToTensor( inputTable, labelTable )
+	return inputTensor, labelTensor
 end
 function task:evalBatch( fid2out, fid2gt )
 	if type( fid2out ) ~= 'table' then fid2out = { fid2out } end
@@ -384,30 +429,30 @@ function task:evalBatch( fid2out, fid2gt )
 	end
 	return oid2eval
 end
-function task:getBatchVal( fidStart )
-	local seqLength = self.opt.seqLength
-	local batchSize = self.opt.batchSize
-	local vidStart = ( fidStart - 1 ) / seqLength + 1
-	local inputTable = {  }
-	local labelTable = {  }
-	local numVideoToSample = batchSize / seqLength
-	local numVideo = self.dbval.vid2path:size( 1 )
-	for v = 1, numVideoToSample do
-		local vid = vidStart + v - 1
-		local vpath = ffi.string( torch.data( self.dbval.vid2path[ vid ] ) )
-		local numFrame = self.dbval.vid2numim[ vid ]
-		local cid = self.dbval.vid2cid[ vid ]
-		local startFrame = torch.random( 1, math.max( 1, numFrame - seqLength + 1 ) )
-		for f = 1, seqLength do
-			local fid = math.min( numFrame, startFrame + f - 1 )
-			local fpath = paths.concat( vpath, string.format( self.dbval.frameFormat, fid ) )
-			local out = self:processImageVal( fpath )
-			table.insert( inputTable, out )
-			table.insert( labelTable, cid )
-		end
-	end
-	local inputTensor, labelTensor = self:tableToTensor( inputTable, labelTable )
-	return inputTensor, labelTensor
+--------------------------------------------------
+-------- TASK-SPECIFIC INTERNAL FUNCTIONS --------
+--------------------------------------------------
+require 'image'
+function task:processImageTrain( path, rw, rh, rf )
+	collectgarbage(  )
+	local input = self:loadImage( path )
+	local iW = input:size( 3 )
+	local iH = input:size( 2 )
+	-- Do random crop.
+	local oW = self.opt.cropSize
+	local oH = self.opt.cropSize
+	local h1 = math.ceil( ( iH - oH ) * rh )
+	local w1 = math.ceil( ( iW - oW ) * rw )
+	if iH == oH then h1 = 0 end
+	if iW == oW then w1 = 0 end
+	local out = image.crop( input, w1, h1, w1 + oW, h1 + oH )
+	assert( out:size( 3 ) == oW )
+	assert( out:size( 2 ) == oH )
+	-- Do horz-flip.
+	if rf > 0.5 then out = image.hflip( out ) end
+	-- Normalize.
+	out = self:normalizeImage( out )
+	return out
 end
 function task:processImageVal( path )
 	collectgarbage(  )
@@ -452,8 +497,8 @@ function task:loadImage( path )
 end
 function task:normalizeImage( im )
 	for i = 1, 3 do
-		if self.mean ~= 0 then im[ i ]:add( -self.mean[ i ] ) end
-		if self.std ~= 0 and self.opt.normalizeStd then im[ i ]:div( self.std[ i ] ) end
+		if self.inputStat.mean then im[ i ]:add( -self.inputStat.mean[ i ] ) end
+		if self.inputStat.std and self.opt.normalizeStd then im[ i ]:div( self.inputStat.std[ i ] ) end
 	end
 	return im
 end
@@ -468,7 +513,4 @@ function task:tableToTensor( inputTable, labelTable )
 		labelTensor[ i ] = labelTable[ i ]
 	end
 	return inputTensor, labelTensor
-end
-function task:print( str )
-	print( 'TASK MANAGER) ' .. str )
 end

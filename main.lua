@@ -2,16 +2,23 @@ torch.setdefaulttensortype( 'torch.FloatTensor' )
 paths.dofile( 'util.lua' )
 paths.dofile( 'setpath.lua' )
 
--- Set task manager.
+-- Define task.
 assert( arg[ 1 ] == '-task', 'Specify a defined task name.' )
 local taskFile = paths.concat( 'task', arg[ 2 ] .. '.lua' )
 paths.dofile( taskFile )
+
+-- Set task manager.
 local task = TaskManager(  )
 task:setOption( arg )
-task:createDb(  )
-task:estimateInputStat(  )
+task:setDb(  )
+task:setInputStat(  )
+
+-- Get necessary data. 
 local opt = task:getOption(  )
 local model, se = task:getModel(  )
+local funtr1, funtr2 = task:getFunctionTrain(  )
+local funval1, funval2 = task:getFunctionVal(  )
+local numbtr, numbval = task:getNumBatch(  )
 
 -- Hire donkeys working for data loading.
 -- This is modified from Soumith's data.lua.
@@ -43,14 +50,14 @@ train = paths.dofile( 'train.lua' )
 train.setOption( opt )
 train.setModel( model )
 train.setDonkey( donkeys )
-train.setFunction( task:getFunctionTrain(  ) )
+train.setFunction( funtr1, funtr2 )
 
 -- Set val.
 val = paths.dofile( 'val.lua' )
-val.setOption( opt, task:getNumBatchVal(  ) )
+val.setOption( opt, numbval )
 val.setModel( model )
 val.setDonkey( donkeys )
-val.setFunction( task:getFunctionVal(  ) )
+val.setFunction( funval1, funval2 )
 
 -- Do the job.
 for e = se, opt.numEpoch do
