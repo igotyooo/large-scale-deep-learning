@@ -57,7 +57,7 @@ function task:setDb(  )
 		self:print( 'Done.' )
 	else
 		self:print( 'Create val db.' )
-		self.dbtr = self:createDbVal(  )
+		self.dbval = self:createDbVal(  )
 		torch.save( self.opt.pathDbVal, self.dbval )
 		self:print( 'Done.' )
 	end
