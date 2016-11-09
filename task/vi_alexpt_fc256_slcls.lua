@@ -283,16 +283,16 @@ function task:defineModel(  )
 	features:remove(  )
 	features:cuda(  )
 	features = makeDataParallel( features, self.opt.numGpu, 1 )
-	-- Create FC tower.
+	-- Create FC.
 	-- In:  ( numVideo X seqLength ), featSize
 	-- Out: ( numVideo X seqLength ), hiddenSize
 	local fc = nn.Sequential(  )
 	fc:add( nn.Linear( featSize, hiddenSize ) )
-	fc:add( nn.Tanh(  ) )
+	fc:add( nn.ReLU(  ) )
 	fc:add( nn.Dropout( 0.5 ) )
 	fc:cuda(  )
 	-- Create FC classifier.
-	-- In:  ( numVideo X seqLength ), featSize
+	-- In:  ( numVideo X seqLength ), hiddenSize
 	-- Out: ( numVideo X seqLength ), numClass
 	local classifierFc = nn.Sequential(  )
 	classifierFc:add( nn.Linear( hiddenSize, numCls ) )
