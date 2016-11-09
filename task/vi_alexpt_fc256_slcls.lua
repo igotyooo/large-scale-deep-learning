@@ -178,7 +178,7 @@ function task:parseOption( arg )
 	local pathDbTrain = paths.concat( dirRoot, 'dbTrain.t7' )
 	local pathDbVal = paths.concat( dirRoot, 'dbVal.t7' )
 	local pathImStat = paths.concat( dirRoot, 'inputStat.t7' )
-	if opt.caffeInput then pathImStat = pathImStat:match( '(.+).t7$' ) .. 'Caffe.t7' end
+	if opt.caffeInput == 1 then pathImStat = pathImStat:match( '(.+).t7$' ) .. 'Caffe.t7' end
 	local ignore = { numGpu=true, backend=true, numDonkey=true, data=true, numEpoch=true, startFrom=true }
 	local dirModel = paths.concat( dirRoot, cmd:string( self.name, opt, ignore ) )
 	if opt.startFrom ~= '' then
