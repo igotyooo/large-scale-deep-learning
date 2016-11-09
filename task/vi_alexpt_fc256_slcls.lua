@@ -71,9 +71,6 @@ function task:setOption( arg )
 	assert( opt.batchSize % opt.seqLength == 0 )
 	assert( opt.numOut > 0 )
 end
-function task:getOption(  )
-	return self.opt
-end
 function task:createDb(  )
 	paths.dofile( string.format( '../db/%s.lua', self.opt.data ) )
 	if paths.filep( self.opt.pathDbTrain ) then
@@ -119,9 +116,6 @@ function task:createDb(  )
 	assert( self.dbval.cid2name:size( 1 ) == self.dbval.vid2cid:max(  ) )
 	assert( self.dbtr.cid2name:size( 1 ) == self.dbval.vid2cid:max(  ) )
 end
-function task:getNumVal(  )
-	return self.dbval.vid2numim:numel(  ) * self.opt.seqLength
-end
 function task:estimateInputStat(  )
 	if paths.filep( self.opt.pathImStat ) then
 		local meanstd = torch.load( self.opt.pathImStat )
@@ -153,6 +147,25 @@ function task:estimateInputStat(  )
 		torch.save( self.opt.pathImStat, cache )
 		self:print( 'Done.' )
 	end
+end
+-------------------------------
+-------- GET FUNCTIONS --------
+-------------------------------
+function task:getOption(  )
+	return self.opt
+end
+function task:getNumVal(  )
+	return self.dbval.vid2numim:numel(  ) * self.opt.seqLength
+end
+function task:getFunctionTrain(  )
+	return
+		function(  ) return self:getBatchTrain(  ) end,
+		function( x, y ) return self:evalBatch( x, y ) end
+end
+function task:getFunctionVal(  )
+	return
+		function( i ) return self:getBatchVal( i ) end,
+		function( x, y ) return self:evalBatch( x, y ) end
 end
 function task:getModel(  )
 	local numEpoch = self.opt.numEpoch
@@ -203,16 +216,6 @@ function task:getModel(  )
 	modelSet.grads = grads
 	modelSet.optims = optims
 	return modelSet, startEpoch
-end
-function task:getFunctionTrain(  )
-	return
-		function(  ) return self:getBatchTrain(  ) end,
-		function( x, y ) return self:evalBatch( x, y ) end
-end
-function task:getFunctionVal(  )
-	return
-		function( i ) return self:getBatchVal( i ) end,
-		function( x, y ) return self:evalBatch( x, y ) end
 end
 ------------------------------------
 -------- INTERNAL FUNCTIONS --------
