@@ -167,16 +167,12 @@ function task:parseOption( arg )
 	cmd:option( '-numEpoch', 32, 'Number of total epochs to run.' )
 	cmd:option( '-epochSize', 2048, 'Number of batches per epoch.' )
 	cmd:option( '-batchSize', 256, 'Frame-level mini-batch size.' )
-	cmd:option( '-learnRate', 1e-3, 'Supports multi-lr for multi-module like "lr1,lr2,lr3".' )
+	cmd:option( '-learnRate', '0,1e-3,1e-3', 'Supports multi-lr for multi-module like "lr1,lr2,lr3".' )
 	cmd:option( '-momentum', 0.9, 'Momentum.' )
 	cmd:option( '-weightDecay', 5e-4, 'Weight decay.' )
 	cmd:option( '-startFrom', '', 'Path to the initial model. Using it for LR decay is recommended.' )
 	cmd:option( '-numOut', 1, 'Number of outputs from net.' )
-	-- Value processing.
 	local opt = cmd:parse( arg or {  } )
-	opt.normalizeStd = opt.normalizeStd > 0
-	opt.keepAspect = opt.keepAspect > 0
-	opt.caffeInput = opt.caffeInput > 0
 	-- Set dst paths.
 	local dirRoot = paths.concat( gpath.dataout, opt.data )
 	local pathDbTrain = paths.concat( dirRoot, 'dbTrain.t7' )
@@ -198,6 +194,12 @@ function task:parseOption( arg )
 	opt.pathOptim = paths.concat( opt.dirModel, 'optimState_%03d.t7' )
 	opt.pathTrainLog = paths.concat( opt.dirModel, 'train.log' )
 	opt.pathValLog = paths.concat( opt.dirModel, 'val.log' )
+	-- Value processing.
+	opt.normalizeStd = opt.normalizeStd > 0
+	opt.keepAspect = opt.keepAspect > 0
+	opt.caffeInput = opt.caffeInput > 0
+	opt.learnRate = opt.learnRate:split( ',' )
+	for k,v in pairs( opt.learnRate ) do opt.learnRate[ k ] = tonumber( v ) end
 	-- Verification.
 	assert( opt.imageSize >= opt.cropSize )
 	assert( opt.batchSize % opt.seqLength == 0 )
@@ -322,21 +324,21 @@ function task:groupParams( model )
 	params[ 2 ], grads[ 2 ] = model.modules[ 2 ]:getParameters(  ) -- FC.
 	params[ 3 ], grads[ 3 ] = model.modules[ 3 ]:getParameters(  ) -- Classifier.
 	optims[ 1 ] = { -- Features.
-		learningRate = self.opt.lrFeature,
+		learningRate = self.opt.learnRate[ 1 ],
 		learningRateDecay = 0.0,
 		momentum = self.opt.momentum,
 		dampening = 0.0,
 		weightDecay = self.opt.weightDecay 
 	}
 	optims[ 2 ] = { -- FC.
-		learningRate = self.opt.lrFc,
+		learningRate = self.opt.learnRate[ 2 ],
 		learningRateDecay = 0.0,
 		momentum = self.opt.momentum,
 		dampening = 0.0,
 		weightDecay = self.opt.weightDecay 
 	}
 	optims[ 3 ] = { -- Classifier.
-		learningRate = self.opt.lrClassifier,
+		learningRate = self.opt.learnRate[ 3 ],
 		learningRateDecay = 0.0,
 		momentum = self.opt.momentum,
 		dampening = 0.0,
