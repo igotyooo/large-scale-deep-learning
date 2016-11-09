@@ -4,7 +4,6 @@ local task = torch.class( 'TaskManager' )
 -------- TASK-INDEPENDENT FUNCTIONS --------
 --------------------------------------------
 function task:__init(  )
-	self.name = 'vi_alexpt_fc256_slcls'
 	self.opt = {  }
 	self.dbtr = {  }
 	self.dbval = {  }
@@ -13,7 +12,6 @@ function task:__init(  )
 	self.numBatchVal = 0
 end
 function task:setOption( arg )
-	assert( self.name == arg[ 2 ] )
 	self.opt = self:parseOption( arg )
 	assert( self.opt.numGpu )
 	assert( self.opt.backend )
@@ -157,7 +155,7 @@ end
 -----------------------------------------
 function task:parseOption( arg )
 	local cmd = torch.CmdLine(  )
-	cmd:option( '-task', self.name )
+	cmd:option( '-task', arg[ 2 ] )
 	-- System.
 	cmd:option( '-numGpu', 2, 'Number of GPUs.' )
 	cmd:option( '-backend', 'cudnn', 'cudnn or nn.' )
@@ -187,7 +185,7 @@ function task:parseOption( arg )
 	local pathImStat = paths.concat( dirRoot, 'inputStat.t7' )
 	if opt.caffeInput == 1 then pathImStat = pathImStat:match( '(.+).t7$' ) .. 'Caffe.t7' end
 	local ignore = { numGpu=true, backend=true, numDonkey=true, data=true, numEpoch=true, startFrom=true }
-	local dirModel = paths.concat( dirRoot, cmd:string( self.name, opt, ignore ) )
+	local dirModel = paths.concat( dirRoot, cmd:string( opt.task, opt, ignore ) )
 	if opt.startFrom ~= '' then
 		local baseDir, epoch = opt.startFrom:match( '(.+)/model_(%d+).t7' )
 		dirModel = paths.concat( baseDir, cmd:string( 'model_' .. epoch, opt, ignore ) )
