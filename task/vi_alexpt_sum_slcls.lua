@@ -302,7 +302,7 @@ function task:defineModel(  )
 	-- Create classifier.
 	-- In:  numVideo, featSize
 	-- Out: numVideo, numClass
-	local classifierFc = nn.Sequential(  )
+	local classifier = nn.Sequential(  )
 	classifier:add( nn.Linear( featSize, numCls ) )
 	classifier:add( nn.LogSoftMax(  ) )
 	classifier:cuda(  )
