@@ -274,6 +274,8 @@ function task:defineModel(  )
 	require 'loadcaffe'
 	-- Set params.
 	local featSize = 4096
+	local seqLength = self.opt.seqLength
+	local numVideo = self.opt.batchSize / seqLength
 	local numCls = self.dbtr.cid2name:size( 1 )
 	-- Load pre-trained CNN.
 	-- In:  ( numVideo X seqLength ), 3, 224, 224
@@ -289,18 +291,27 @@ function task:defineModel(  )
 	features:remove(  )
 	features:cuda(  )
 	features = makeDataParallel( features, self.opt.numGpu, 1 )
-	-- Create classifier.
+	-- Create sum pooling.
 	-- In:  ( numVideo X seqLength ), featSize
-	-- Out: ( numVideo X seqLength ), numClass
+	-- Out: numVideo, featSize
+	local sum = nn.Sequential(  )
+	sum:add( nn.Reshape( numVideo, seqLength, featSize ) )
+	sum:add( nn.Mean( 2 ) )
+	sum:add( nn.Dropout( 0.5 ) )
+	sum:cuda(  )
+	-- Create classifier.
+	-- In:  numVideo, featSize
+	-- Out: numVideo, numClass
 	local classifierFc = nn.Sequential(  )
 	classifier:add( nn.Linear( featSize, numCls ) )
 	classifier:add( nn.LogSoftMax(  ) )
 	classifier:cuda(  )
 	-- Combine sub models.
 	-- In:  ( numVideo X seqLength ), 3, 224, 224
-	-- Out: ( numVideo X seqLength ), numClass
+	-- Out: numVideo, numClass
 	local model = nn.Sequential(  )
 	model:add( features )
+	model:add( sum )
 	model:add( classifier )
 	model:cuda(  )
 	-- Check options.
@@ -316,7 +327,7 @@ end
 function task:groupParams( model )
 	local params, grads, optims = {  }, {  }, {  }
 	params[ 1 ], grads[ 1 ] = model.modules[ 1 ]:getParameters(  ) -- Features.
-	params[ 2 ], grads[ 2 ] = model.modules[ 2 ]:getParameters(  ) -- Classifier.
+	params[ 2 ], grads[ 2 ] = model.modules[ 3 ]:getParameters(  ) -- Classifier.
 	optims[ 1 ] = { -- Features.
 		learningRate = self.opt.learnRate[ 1 ],
 		learningRateDecay = 0.0,
@@ -336,10 +347,12 @@ end
 function task:getBatchTrain(  )
 	local batchSize = self.opt.batchSize
 	local seqLength = self.opt.seqLength
+	local cropSize = self.opt.cropSize
 	local numVideoToSample = batchSize / seqLength
-	local inputTable = {  }
-	local labelTable = {  }
+	local input = torch.Tensor( batchSize, 3, cropSize, cropSize )
+	local label = torch.LongTensor( numVideoToSample )
 	local numVideo = self.dbtr.vid2path:size( 1 )
+	local fcnt = 0
 	for v = 1, numVideoToSample do
 		local vid = torch.random( 1, numVideo )
 		local vpath = ffi.string( torch.data( self.dbtr.vid2path[ vid ] ) )
@@ -355,22 +368,23 @@ function task:getBatchTrain(  )
 				rh = torch.uniform(  )
 				rf = torch.uniform(  )
 			end
-			local out = self:processImageTrain( fpath, rw, rh, rf )
-			table.insert( inputTable, out )
-			table.insert( labelTable, cid )
+			fcnt = fcnt + 1
+			input[ fcnt ]:copy( self:processImageTrain( fpath, rw, rh, rf ) )
 		end
+		label[ v ] = cid
 	end
-	local inputTensor, labelTensor = self:tableToTensor( inputTable, labelTable )
-	return inputTensor, labelTensor
+	return input, label
 end
 function task:getBatchVal( fidStart )
 	local seqLength = self.opt.seqLength
 	local batchSize = self.opt.batchSize
+	local cropSize = self.opt.cropSize
 	local vidStart = ( fidStart - 1 ) / seqLength + 1
-	local inputTable = {  }
-	local labelTable = {  }
 	local numVideoToSample = batchSize / seqLength
+	local input = torch.Tensor( batchSize, 3, cropSize, cropSize )
+	local label = torch.LongTensor( numVideoToSample )
 	local numVideo = self.dbval.vid2path:size( 1 )
+	local fcnt = 0
 	for v = 1, numVideoToSample do
 		local vid = vidStart + v - 1
 		local vpath = ffi.string( torch.data( self.dbval.vid2path[ vid ] ) )
@@ -380,41 +394,30 @@ function task:getBatchVal( fidStart )
 		for f = 1, seqLength do
 			local fid = math.min( numFrame, startFrame + f - 1 )
 			local fpath = paths.concat( vpath, string.format( self.dbval.frameFormat, fid ) )
-			local out = self:processImageVal( fpath )
-			table.insert( inputTable, out )
-			table.insert( labelTable, cid )
+			fcnt = fcnt + 1
+			input[ fcnt ]:copy( self:processImageVal( fpath ) )
 		end
+		label[ v ] = cid
 	end
-	local inputTensor, labelTensor = self:tableToTensor( inputTable, labelTable )
-	return inputTensor, labelTensor
+	return input, label
 end
-function task:evalBatch( fid2out, fid2gt )
-	if type( fid2out ) ~= 'table' then fid2out = { fid2out } end
-	local numOut = #fid2out
-	local seqLength = self.opt.seqLength
-	local batchSize = fid2out[ 1 ]:size( 1 )
-	local numVideo = batchSize / seqLength
+function task:evalBatch( vid2out, vid2gt )
+	if type( vid2out ) ~= 'table' then vid2out = { vid2out } end
+	local numOut = #vid2out
+	local numVideo = vid2out[ 1 ]:size( 1 )
 	local oid2eval = torch.Tensor( numOut ):fill( 0 )
+	assert( numVideo == vid2gt:numel(  ) )
+	assert( numVideo == self.opt.batchSize / self.opt.seqLength )
 	assert( numOut == self.opt.numOut )
-	assert( batchSize == self.opt.batchSize )
-	for oid, out in pairs( fid2out ) do
-		local _, fid2pcid = out:float(  ):sort( 2, true )
-		local vid2true = torch.zeros( numVideo, 1 )
+	for oid, out in pairs( vid2out ) do
+		local _, vid2pcid = out:float(  ):sort( 2, true )
 		local top1 = 0
 		for v = 1, numVideo do
-			local fbias = ( v - 1 ) * seqLength
-			local pcid2num = torch.zeros( out:size( 2 ) )
-			local cid = fid2gt[ fbias + 1 ]
-			for f = 1, seqLength do
-				local fid = fbias + f
-				local pcid = fid2pcid[ fid ][ 1 ]
-				pcid2num[ pcid ] = pcid2num[ pcid ] + 1
+			if vid2pcid[ v ][ 1 ] == vid2gt[ v ] then
+				top1 = top1 + 1
 			end
-			local _, rank2pcid = pcid2num:sort( true )
-			if cid == rank2pcid[ 1 ] then top1 = top1 + 1 end
 		end
-		top1 = top1 * 100 / numVideo
-		oid2eval[ oid ] = top1
+		oid2eval[ oid ] = top1 * 100 / numVideo
 	end
 	return oid2eval
 end
@@ -490,16 +493,4 @@ function task:normalizeImage( im )
 		if self.inputStat.std and self.opt.normalizeStd then im[ i ]:div( self.inputStat.std[ i ] ) end
 	end
 	return im
-end
-function task:tableToTensor( inputTable, labelTable )
-	local inputTensor, labelTensor
-	local quantity = #labelTable
-	assert( inputTable[ 1 ]:dim(  ) == 3 )
-	inputTensor = torch.Tensor( quantity, 3, self.opt.cropSize, self.opt.cropSize )
-	labelTensor = torch.LongTensor( quantity ):fill( 0 )
-	for i = 1, #inputTable do
-		inputTensor[ i ]:copy( inputTable[ i ] )
-		labelTensor[ i ] = labelTable[ i ]
-	end
-	return inputTensor, labelTensor
 end
