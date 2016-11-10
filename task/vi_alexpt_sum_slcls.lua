@@ -297,7 +297,6 @@ function task:defineModel(  )
 	local sum = nn.Sequential(  )
 	sum:add( nn.Reshape( numVideo, seqLength, featSize ) )
 	sum:add( nn.Mean( 2 ) )
-	sum:add( nn.Dropout( 0.5 ) )
 	sum:cuda(  )
 	-- Create classifier.
 	-- In:  numVideo, featSize
