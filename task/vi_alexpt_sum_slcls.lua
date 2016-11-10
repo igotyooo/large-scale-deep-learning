@@ -289,6 +289,7 @@ function task:defineModel(  )
 	features:remove(  )
 	features:remove(  )
 	features:remove(  )
+	features:remove(  ) -- NOTE) This removes dropout!
 	features:cuda(  )
 	features = makeDataParallel( features, self.opt.numGpu, 1 )
 	-- Create sum pooling.
@@ -297,6 +298,7 @@ function task:defineModel(  )
 	local sum = nn.Sequential(  )
 	sum:add( nn.Reshape( numVideo, seqLength, featSize ) )
 	sum:add( nn.Mean( 2 ) )
+	sum:add( nn.Dropout( 0.5 ) )
 	sum:cuda(  )
 	-- Create classifier.
 	-- In:  numVideo, featSize
