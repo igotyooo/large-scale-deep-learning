@@ -290,7 +290,6 @@ function task:defineModel(  )
 	features:remove(  )
 	features:remove(  )
 	features:remove(  )
-	features:remove(  ) -- NOTE) This removes dropout!
 	features:cuda(  )
 	features = makeDataParallel( features, self.opt.numGpu, 1 )
 	-- Create context.
@@ -323,7 +322,6 @@ function task:defineModel(  )
 	local h_contextUp = contextUp( h_context )
 	local h_motion = motion( { h_feature, h_contextUp } )
 	local h_decompose = nn.JoinTable( 2 )( { h_context, h_motion } )
-	local h_decompose = nn.Dropout( 0.5 )( h_decompose )
 	local decompose = nn.gModule( { h_feature }, { h_decompose } )
 	decompose:cuda(  )
 	-- Create classifier.
