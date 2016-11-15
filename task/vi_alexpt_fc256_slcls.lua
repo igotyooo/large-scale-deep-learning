@@ -168,6 +168,10 @@ function task:parseOption( arg )
 	cmd:option( '-normalizeStd', 0, '1 for normalize piexel std to 1, 0 for no.' )
 	cmd:option( '-seqLength', 16, 'Number of frames per input video' )
 	cmd:option( '-caffeInput', 1, '1 for caffe input, 0 for no.' )
+	-- Model.
+	cmd:option( '-hiddenSize', 256, 'Size of hidden layer.' )
+	cmd:option( '-videoPool', 'sum', 'Pooling method for frames per video' )
+	cmd:option( '-numOut', 1, 'Number of outputs from net.' )
 	-- Train.
 	cmd:option( '-numEpoch', 50, 'Number of total epochs to run.' )
 	cmd:option( '-epochSize', 2384, 'Number of batches per epoch.' )
@@ -176,7 +180,6 @@ function task:parseOption( arg )
 	cmd:option( '-momentum', 0.9, 'Momentum.' )
 	cmd:option( '-weightDecay', 5e-4, 'Weight decay.' )
 	cmd:option( '-startFrom', '', 'Path to the initial model. Using it for LR decay is recommended.' )
-	cmd:option( '-numOut', 1, 'Number of outputs from net.' )
 	local opt = cmd:parse( arg or {  } )
 	-- Set dst paths.
 	local dirRoot = paths.concat( gpath.dataout, opt.data )
@@ -354,41 +357,41 @@ end
 function task:getBatchTrain(  )
 	local batchSize = self.opt.batchSize
 	local seqLength = self.opt.seqLength
+	local cropSize = self.opt.cropSize
 	local numVideoToSample = batchSize / seqLength
-	local inputTable = {  }
-	local labelTable = {  }
+	local input = torch.Tensor( batchSize, 3, cropSize, cropSize )
+	local label = torch.LongTensor( batchSize )
 	local numVideo = self.dbtr.vid2path:size( 1 )
+	local fcnt = 0
 	for v = 1, numVideoToSample do
 		local vid = torch.random( 1, numVideo )
 		local vpath = ffi.string( torch.data( self.dbtr.vid2path[ vid ] ) )
 		local numFrame = self.dbtr.vid2numim[ vid ]
 		local cid = self.dbtr.vid2cid[ vid ]
 		local startFrame = torch.random( 1, math.max( 1, numFrame - seqLength + 1 ) )
-		local rw, rh, rf
+		local rw = torch.uniform(  )
+		local rh = torch.uniform(  )
+		local rf = torch.uniform(  )
 		for f = 1, seqLength do
 			local fid = math.min( numFrame, startFrame + f - 1 )
 			local fpath = paths.concat( vpath, string.format( self.dbtr.frameFormat, fid ) )
-			if f == 1 then
-				rw = torch.uniform(  )
-				rh = torch.uniform(  )
-				rf = torch.uniform(  )
-			end
-			local out = self:processImageTrain( fpath, rw, rh, rf )
-			table.insert( inputTable, out )
-			table.insert( labelTable, cid )
+			fcnt = fcnt + 1
+			input[ fcnt ]:copy( self:processImageTrain( fpath, rw, rh, rf ) )
+			label[ fcnt ] = cid
 		end
 	end
-	local inputTensor, labelTensor = self:tableToTensor( inputTable, labelTable )
-	return inputTensor, labelTensor
+	return input, label
 end
 function task:getBatchVal( fidStart )
 	local seqLength = self.opt.seqLength
 	local batchSize = self.opt.batchSize
+	local cropSize = self.opt.cropSize
 	local vidStart = ( fidStart - 1 ) / seqLength + 1
-	local inputTable = {  }
-	local labelTable = {  }
 	local numVideoToSample = batchSize / seqLength
+	local input = torch.Tensor( batchSize, 3, cropSize, cropSize )
+	local label = torch.LongTensor( batchSize )
 	local numVideo = self.dbval.vid2path:size( 1 )
+	local fcnt = 0
 	for v = 1, numVideoToSample do
 		local vid = vidStart + v - 1
 		local vpath = ffi.string( torch.data( self.dbval.vid2path[ vid ] ) )
@@ -398,41 +401,43 @@ function task:getBatchVal( fidStart )
 		for f = 1, seqLength do
 			local fid = math.min( numFrame, startFrame + f - 1 )
 			local fpath = paths.concat( vpath, string.format( self.dbval.frameFormat, fid ) )
-			local out = self:processImageVal( fpath )
-			table.insert( inputTable, out )
-			table.insert( labelTable, cid )
+			fcnt = fcnt + 1
+			input[ fcnt ]:copy( self:processImageVal( fpath ) )
+			label[ fcnt ] = cid
 		end
 	end
-	local inputTensor, labelTensor = self:tableToTensor( inputTable, labelTable )
-	return inputTensor, labelTensor
+	return input, label
 end
-function task:evalBatch( fid2out, fid2gt )
+function task:evalBatch( fid2out, fid2label )
 	if type( fid2out ) ~= 'table' then fid2out = { fid2out } end
 	local numOut = #fid2out
 	local seqLength = self.opt.seqLength
-	local batchSize = fid2out[ 1 ]:size( 1 )
-	local numVideo = batchSize / seqLength
+	local batchSize = self.opt.batchSize
+	local numVideo = fid2out[ 1 ]:size( 1 ) / seqLength
+	local pooling = self.opt.videoPool
 	local oid2eval = torch.Tensor( numOut ):fill( 0 )
+	assert( batchSize == fid2label:numel(  ) )
+	assert( numVideo == batchSize / seqLength )
 	assert( numOut == self.opt.numOut )
-	assert( batchSize == self.opt.batchSize )
 	for oid, out in pairs( fid2out ) do
 		local _, fid2pcid = out:float(  ):sort( 2, true )
-		local vid2true = torch.zeros( numVideo, 1 )
 		local top1 = 0
 		for v = 1, numVideo do
-			local fbias = ( v - 1 ) * seqLength
-			local pcid2num = torch.zeros( out:size( 2 ) )
-			local cid = fid2gt[ fbias + 1 ]
-			for f = 1, seqLength do
-				local fid = fbias + f
-				local pcid = fid2pcid[ fid ][ 1 ]
-				pcid2num[ pcid ] = pcid2num[ pcid ] + 1
+			local fs = ( v - 1 ) * seqLength + 1
+			local fe = fs + seqLength - 1
+			assert( fid2label[ fs ] == fid2label[ fe ] )
+			local cid2score
+			if pooling == 'sum' then
+				cid2score = out[ { { fs, fe }, {  } } ]:mean( 1 )
+			elseif pooling == 'max' then
+				cid2score = out[ { { fs, fe }, {  } } ]:max( 1 )
 			end
-			local _, rank2pcid = pcid2num:sort( true )
-			if cid == rank2pcid[ 1 ] then top1 = top1 + 1 end
+			local _, rank2cid = cid2score:float(  ):sort( 2, true )
+			if rank2cid[ 1 ][ 1 ] == fid2label[ fs ] then
+				top1 = top1 + 1
+			end
 		end
-		top1 = top1 * 100 / numVideo
-		oid2eval[ oid ] = top1
+		oid2eval[ oid ] = top1 * 100 / numVideo
 	end
 	return oid2eval
 end
