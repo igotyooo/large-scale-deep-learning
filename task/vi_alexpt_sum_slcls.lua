@@ -168,6 +168,8 @@ function task:parseOption( arg )
 	cmd:option( '-normalizeStd', 0, '1 for normalize piexel std to 1, 0 for no.' )
 	cmd:option( '-seqLength', 16, 'Number of frames per input video' )
 	cmd:option( '-caffeInput', 1, '1 for caffe input, 0 for no.' )
+	-- Model.
+	cmd:option( '-numOut', 1, 'Number of outputs from net.' )
 	-- Train.
 	cmd:option( '-numEpoch', 50, 'Number of total epochs to run.' )
 	cmd:option( '-epochSize', 2384, 'Number of batches per epoch.' )
@@ -176,7 +178,6 @@ function task:parseOption( arg )
 	cmd:option( '-momentum', 0.9, 'Momentum.' )
 	cmd:option( '-weightDecay', 5e-4, 'Weight decay.' )
 	cmd:option( '-startFrom', '', 'Path to the initial model. Using it for LR decay is recommended.' )
-	cmd:option( '-numOut', 1, 'Number of outputs from net.' )
 	local opt = cmd:parse( arg or {  } )
 	-- Set dst paths.
 	local dirRoot = paths.concat( gpath.dataout, opt.data )
@@ -276,7 +277,7 @@ function task:defineModel(  )
 	local featSize = 4096
 	local seqLength = self.opt.seqLength
 	local numVideo = self.opt.batchSize / seqLength
-	local numCls = self.dbtr.cid2name:size( 1 )
+	local numClass = self.dbtr.cid2name:size( 1 )
 	-- Load pre-trained CNN.
 	-- In:  ( numVideo X seqLength ), 3, 224, 224
 	-- Out: ( numVideo X seqLength ), featSize
@@ -302,7 +303,7 @@ function task:defineModel(  )
 	-- In:  numVideo, featSize
 	-- Out: numVideo, numClass
 	local classifier = nn.Sequential(  )
-	classifier:add( nn.Linear( featSize, numCls ) )
+	classifier:add( nn.Linear( featSize, numClass ) )
 	classifier:add( nn.LogSoftMax(  ) )
 	classifier:cuda(  )
 	-- Combine sub models.
@@ -358,15 +359,12 @@ function task:getBatchTrain(  )
 		local numFrame = self.dbtr.vid2numim[ vid ]
 		local cid = self.dbtr.vid2cid[ vid ]
 		local startFrame = torch.random( 1, math.max( 1, numFrame - seqLength + 1 ) )
-		local rw, rh, rf
+		local rw = torch.uniform(  )
+		local rh = torch.uniform(  )
+		local rf = torch.uniform(  )
 		for f = 1, seqLength do
 			local fid = math.min( numFrame, startFrame + f - 1 )
 			local fpath = paths.concat( vpath, string.format( self.dbtr.frameFormat, fid ) )
-			if f == 1 then
-				rw = torch.uniform(  )
-				rh = torch.uniform(  )
-				rf = torch.uniform(  )
-			end
 			fcnt = fcnt + 1
 			input[ fcnt ]:copy( self:processImageTrain( fpath, rw, rh, rf ) )
 		end
@@ -400,19 +398,19 @@ function task:getBatchVal( fidStart )
 	end
 	return input, label
 end
-function task:evalBatch( vid2out, vid2gt )
+function task:evalBatch( vid2out, vid2label )
 	if type( vid2out ) ~= 'table' then vid2out = { vid2out } end
 	local numOut = #vid2out
 	local numVideo = vid2out[ 1 ]:size( 1 )
 	local oid2eval = torch.Tensor( numOut ):fill( 0 )
-	assert( numVideo == vid2gt:numel(  ) )
+	assert( numVideo == vid2label:numel(  ) )
 	assert( numVideo == self.opt.batchSize / self.opt.seqLength )
 	assert( numOut == self.opt.numOut )
 	for oid, out in pairs( vid2out ) do
 		local _, vid2pcid = out:float(  ):sort( 2, true )
 		local top1 = 0
 		for v = 1, numVideo do
-			if vid2pcid[ v ][ 1 ] == vid2gt[ v ] then
+			if vid2pcid[ v ][ 1 ] == vid2label[ v ] then
 				top1 = top1 + 1
 			end
 		end

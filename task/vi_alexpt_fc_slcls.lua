@@ -278,7 +278,7 @@ function task:defineModel(  )
 	-- Set params.
 	local featSize = 4096
 	local hiddenSize = 256
-	local numCls = self.dbtr.cid2name:size( 1 )
+	local numClass = self.dbtr.cid2name:size( 1 )
 	-- Load pre-trained CNN.
 	-- In:  ( numVideo X seqLength ), 3, 224, 224
 	-- Out: ( numVideo X seqLength ), featSize
@@ -305,7 +305,7 @@ function task:defineModel(  )
 	-- In:  ( numVideo X seqLength ), hiddenSize
 	-- Out: ( numVideo X seqLength ), numClass
 	local classifierFc = nn.Sequential(  )
-	classifierFc:add( nn.Linear( hiddenSize, numCls ) )
+	classifierFc:add( nn.Linear( hiddenSize, numClass ) )
 	classifierFc:add( nn.LogSoftMax(  ) )
 	classifierFc:cuda(  )
 	-- Combine sub models.
