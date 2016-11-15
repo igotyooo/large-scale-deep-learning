@@ -169,6 +169,7 @@ function task:parseOption( arg )
 	cmd:option( '-seqLength', 16, 'Number of frames per input video' )
 	cmd:option( '-caffeInput', 1, '1 for caffe input, 0 for no.' )
 	-- Model.
+	cmd:option( '-dropout', 0.5, 'Dropout ratio.' )
 	cmd:option( '-hiddenSize', 256, 'Size of hidden layer.' )
 	cmd:option( '-videoPool', 'sum', 'Pooling method for frames per video' )
 	cmd:option( '-numOut', 1, 'Number of outputs from net.' )
@@ -279,6 +280,7 @@ function task:defineModel(  )
 	local featSize = 4096
 	local hiddenSize = 256
 	local numClass = self.dbtr.cid2name:size( 1 )
+	local dropout = self.opt.dropout
 	-- Load pre-trained CNN.
 	-- In:  ( numVideo X seqLength ), 3, 224, 224
 	-- Out: ( numVideo X seqLength ), featSize
@@ -291,6 +293,8 @@ function task:defineModel(  )
 	features:remove(  )
 	features:remove(  )
 	features:remove(  )
+	features:remove(  ) -- Removes dropout.
+	features:add( nn.Dropout( dropout ) )
 	features:cuda(  )
 	features = makeDataParallel( features, self.opt.numGpu, 1 )
 	-- Create FC.
@@ -299,7 +303,7 @@ function task:defineModel(  )
 	local fc = nn.Sequential(  )
 	fc:add( nn.Linear( featSize, hiddenSize ) )
 	fc:add( nn.ReLU(  ) )
-	fc:add( nn.Dropout( 0.5 ) )
+	fc:add( nn.Dropout( dropout ) )
 	fc:cuda(  )
 	-- Create FC classifier.
 	-- In:  ( numVideo X seqLength ), hiddenSize
@@ -317,6 +321,7 @@ function task:defineModel(  )
 	model:add( classifierFc )
 	model:cuda(  )
 	-- Check options.
+	assert( self.opt.dropout <= 1 and self.opt.dropout >= 0 )
 	assert( self.opt.numOut == 1 )
 	assert( self.opt.caffeInput )
 	assert( not self.opt.normalizeStd )

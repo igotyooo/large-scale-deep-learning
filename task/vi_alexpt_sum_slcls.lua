@@ -169,6 +169,7 @@ function task:parseOption( arg )
 	cmd:option( '-seqLength', 16, 'Number of frames per input video' )
 	cmd:option( '-caffeInput', 1, '1 for caffe input, 0 for no.' )
 	-- Model.
+	cmd:option( '-dropout', 0.5, 'Dropout ratio.' )
 	cmd:option( '-numOut', 1, 'Number of outputs from net.' )
 	-- Train.
 	cmd:option( '-numEpoch', 50, 'Number of total epochs to run.' )
@@ -278,6 +279,7 @@ function task:defineModel(  )
 	local seqLength = self.opt.seqLength
 	local numVideo = self.opt.batchSize / seqLength
 	local numClass = self.dbtr.cid2name:size( 1 )
+	local dropout = self.opt.dropout
 	-- Load pre-trained CNN.
 	-- In:  ( numVideo X seqLength ), 3, 224, 224
 	-- Out: ( numVideo X seqLength ), featSize
@@ -290,6 +292,8 @@ function task:defineModel(  )
 	features:remove(  )
 	features:remove(  )
 	features:remove(  )
+	features:remove(  ) -- Removes dropout.
+	features:add( nn.Dropout( dropout ) )
 	features:cuda(  )
 	features = makeDataParallel( features, self.opt.numGpu, 1 )
 	-- Create sum pooling.
@@ -315,6 +319,7 @@ function task:defineModel(  )
 	model:add( classifier )
 	model:cuda(  )
 	-- Check options.
+	assert( self.opt.dropout <= 1 and self.opt.dropout >= 0 )
 	assert( self.opt.numOut == 1 )
 	assert( self.opt.caffeInput )
 	assert( not self.opt.normalizeStd )

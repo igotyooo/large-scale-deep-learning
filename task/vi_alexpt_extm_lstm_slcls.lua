@@ -169,6 +169,7 @@ function task:parseOption( arg )
 	cmd:option( '-seqLength', 16, 'Number of frames per input video' )
 	cmd:option( '-caffeInput', 1, '1 for caffe input, 0 for no.' )
 	-- Model.
+	cmd:option( '-dropout', 0.5, 'Dropout ratio.' )
 	cmd:option( '-hiddenSize', 256, 'Size of hidden layer.' )
 	cmd:option( '-videoPool', 'sum', 'Pooling method for frames per video' )
 	cmd:option( '-numOut', 1, 'Number of outputs from net.' )
@@ -282,6 +283,7 @@ function task:defineModel(  )
 	local seqLength = self.opt.seqLength
 	local numVideo = self.opt.batchSize / seqLength
 	local numClass = self.dbtr.cid2name:size( 1 )
+	local dropout = self.opt.dropout
 	-- Load pre-trained CNN.
 	-- In:  ( numVideo X seqLength ), 3, 224, 224
 	-- Out: ( numVideo X seqLength ), featSize
@@ -294,7 +296,7 @@ function task:defineModel(  )
 	features:remove(  )
 	features:remove(  )
 	features:remove(  )
-	features:remove(  ) -- NOTE) This removes dropout!
+	features:remove(  ) -- Removes dropout.
 	features:cuda(  )
 	features = makeDataParallel( features, self.opt.numGpu, 1 )
 	-- Create motion extraction.
@@ -305,7 +307,7 @@ function task:defineModel(  )
 	extm:add( nn.ConcatTable(  ):add( nn.Narrow( 2, 2, seqLength - 1 ) ):add( nn.Narrow( 2, 1, seqLength - 1 ) ) )
 	extm:add( nn.CSubTable(  ) )
 	extm:add( nn.Reshape( numVideo * ( seqLength - 1 ), featSize ) )
-	extm:add( nn.Dropout( 0.5 ) )
+	extm:add( nn.Dropout( dropout ) )
 	extm:cuda(  )
 	-- Create LSTM.
 	-- In:  ( numVideo X ( seqLength - 1 ) ), featSize
@@ -314,7 +316,7 @@ function task:defineModel(  )
 	lstm:add( nn.Reshape( numVideo, seqLength - 1, featSize ) ) -- LSTM input is numVideo, SeqLength, vectorDim
 	lstm:add( nn.LSTM( featSize, hiddenSize ) )
 	lstm:add( nn.Reshape( numVideo * ( seqLength - 1 ), hiddenSize ) )
-	lstm:add( nn.Dropout( 0.5 ) )
+	lstm:add( nn.Dropout( dropout ) )
 	lstm:cuda(  )
 	-- Create classifier.
 	-- In:  ( numVideo X ( seqLength - 1 ) ), hiddenSize
@@ -333,6 +335,7 @@ function task:defineModel(  )
 	model:add( classifier )
 	model:cuda(  )
 	-- Check options.
+	assert( self.opt.dropout <= 1 and self.opt.dropout >= 0 )
 	assert( self.opt.numOut == 1 )
 	assert( self.opt.caffeInput )
 	assert( not self.opt.normalizeStd )
