@@ -27,7 +27,6 @@ function val.setFunction( getBatch, evalBatch )
 end
 function val.val( epoch )
 	-- Initialization.
-	local valLogger = io.open( val.pathValLog, 'a' )
 	local epochTimer = torch.Timer(  )
 	local getBatch = val.getBatch
 	local valBatch = val.valBatch
@@ -57,8 +56,11 @@ function val.val( epoch )
 	local evalEpochStr = val.tensor2str( val.evalEpoch, '%.4f' )
 	val.print( string.format( 'Epoch %d, time %.2fs, avg loss %.4f, eval %s', 
 		epoch, epochTimer:time(  ).real, val.lossEpoch, evalEpochStr ) )
-	valLogger:write( string.format( '%03d %.4f %s\n', epoch, val.lossEpoch, evalEpochStr ) )
-	valLogger:close(  )
+	if epoch > 0 then
+		local valLogger = io.open( val.pathValLog, 'a' )
+		valLogger:write( string.format( '%03d %.4f %s\n', epoch, val.lossEpoch, evalEpochStr ) )
+		valLogger:close(  )
+	end
 	collectgarbage(  )
 end
 function val.valBatch( inputsCpu, labelsCpu )
