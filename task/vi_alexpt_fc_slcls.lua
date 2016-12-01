@@ -402,7 +402,7 @@ function task:getBatchVal( fidStart )
 		local vpath = ffi.string( torch.data( self.dbval.vid2path[ vid ] ) )
 		local numFrame = self.dbval.vid2numim[ vid ]
 		local cid = self.dbval.vid2cid[ vid ]
-		local startFrame = torch.random( 1, math.max( 1, numFrame - seqLength + 1 ) )
+		local startFrame = math.floor( math.max( 0, numFrame - seqLength ) / 2 ) + 1
 		for f = 1, seqLength do
 			local fid = math.min( numFrame, startFrame + f - 1 )
 			local fpath = paths.concat( vpath, string.format( self.dbval.frameFormat, fid ) )
