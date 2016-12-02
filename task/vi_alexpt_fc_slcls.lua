@@ -425,7 +425,6 @@ function task:evalBatch( fid2out, fid2label )
 	assert( numVideo == batchSize / seqLength )
 	assert( numOut == self.opt.numOut )
 	for oid, out in pairs( fid2out ) do
-		local _, fid2pcid = out:float(  ):sort( 2, true )
 		local top1 = 0
 		for v = 1, numVideo do
 			local fs = ( v - 1 ) * seqLength + 1
