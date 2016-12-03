@@ -173,6 +173,7 @@ function task:parseOption( arg )
 	cmd:option( '-hiddenSize', 256, 'Size of hidden layer.' )
 	cmd:option( '-videoPool', 'sum', 'Pooling method for frames per video' )
 	cmd:option( '-numOut', 1, 'Number of outputs from net.' )
+	cmd:option( '-diffLevel', 1, 'Conv layer id after which motions are extracted..' )
 	-- Train.
 	cmd:option( '-numEpoch', 50, 'Number of total epochs to run.' )
 	cmd:option( '-epochSize', 2384, 'Number of batches per epoch.' )
@@ -283,13 +284,37 @@ function task:defineModel(  )
 	local numVideo = self.opt.batchSize / seqLength
 	local numClass = self.dbtr.cid2name:size( 1 )
 	local dropout = self.opt.dropout
+	local inputSize = self.opt.cropSize
+	local diffLevel = self.opt.diffLevel
+	local diffSize
+	local diffLayer
+	if diffLevel == 0 then
+		diffSize = torch.LongTensor{ 3, inputSize, inputSize }
+		diffLayer = 1
+	elseif diffLevel == 1 then
+		diffSize = torch.LongTensor{ 96, 54, 54 }
+		diffLayer = 3
+	elseif diffLevel == 2 then
+		diffSize = torch.LongTensor{ 256, 27, 27 }
+		diffLayer = 7
+	elseif diffLevel == 3 then
+		diffSize = torch.LongTensor{ 384, 13, 13 }
+		diffLayer = 11
+	elseif diffLevel == 4 then
+		diffSize = torch.LongTensor{ 384, 13, 13 }
+		diffLayer = 13
+	elseif diffLevel == 5 then
+		diffSize = torch.LongTensor{ 256, 13, 13 }
+		diffLayer = 15
+	end
+	assert( diffSize and diffLayer )
 	-- Create motion extractor.
-	local extm = nn.Sequential(  )
-	extm:add( nn.Reshape( numVideo, seqLength, 96 * 54 * 54 ) )
-	extm:add( nn.ConcatTable(  ):add( nn.Narrow( 2, 2, seqLength - 1 ) ):add( nn.Narrow( 2, 1, seqLength - 1 ) ) )
-	extm:add( nn.CSubTable(  ) )
-	extm:add( nn.Reshape( numVideo * ( seqLength - 1 ), 96, 54, 54 ) )
-	extm:cuda(  )
+	local diff = nn.Sequential(  )
+	diff:add( nn.Reshape( numVideo, seqLength, diffSize:prod(  ) ) )
+	diff:add( nn.ConcatTable(  ):add( nn.Narrow( 2, 2, seqLength - 1 ) ):add( nn.Narrow( 2, 1, seqLength - 1 ) ) )
+	diff:add( nn.CSubTable(  ) )
+	diff:add( nn.Reshape( numVideo * ( seqLength - 1 ), diffSize[ 1 ], diffSize[ 2 ], diffSize[ 3 ] ) )
+	diff:cuda(  )
 	-- Load pre-trained CNN.
 	self:print( 'Load pre-trained Caffe feature.' )
 	local proto = gpath.net.alex_caffe_proto
@@ -297,7 +322,7 @@ function task:defineModel(  )
 	local features = loadcaffe.load( proto, caffemodel, self.opt.backend )
 	self:print( 'Done.' )
 	-- Insert motion extractor to features and remove FCs.
-	features:insert( extm, 3 )
+	features:insert( diff, diffLayer )
 	features:remove(  )
 	features:remove(  )
 	features:remove(  )
