@@ -173,7 +173,8 @@ function task:parseOption( arg )
 	cmd:option( '-hiddenSize', 256, 'Size of hidden layer.' )
 	cmd:option( '-videoPool', 'sum', 'Pooling method for frames per video' )
 	cmd:option( '-numOut', 1, 'Number of outputs from net.' )
-	cmd:option( '-diffLevel', 1, 'Conv layer id after which motions are extracted..' )
+	cmd:option( '-diffLevel', 1, 'Conv layer id after which motions are extracted.' )
+	cmd:option( '-diffScale', 1, 'Time scale for differentiation.' )
 	-- Train.
 	cmd:option( '-numEpoch', 50, 'Number of total epochs to run.' )
 	cmd:option( '-epochSize', 2384, 'Number of batches per epoch.' )
@@ -286,6 +287,7 @@ function task:defineModel(  )
 	local dropout = self.opt.dropout
 	local inputSize = self.opt.cropSize
 	local diffLevel = self.opt.diffLevel
+	local diffScale = self.opt.diffScale
 	local diffSize
 	local diffLayer
 	if diffLevel == 0 then
@@ -311,9 +313,9 @@ function task:defineModel(  )
 	-- Create motion extractor.
 	local diff = nn.Sequential(  )
 	diff:add( nn.Reshape( numVideo, seqLength, diffSize:prod(  ) ) )
-	diff:add( nn.ConcatTable(  ):add( nn.Narrow( 2, 2, seqLength - 1 ) ):add( nn.Narrow( 2, 1, seqLength - 1 ) ) )
+	diff:add( nn.ConcatTable(  ):add( nn.Narrow( 2, 1 + diffScale, seqLength - diffScale ) ):add( nn.Narrow( 2, 1, seqLength - diffScale ) ) )
 	diff:add( nn.CSubTable(  ) )
-	diff:add( nn.Reshape( numVideo * ( seqLength - 1 ), diffSize[ 1 ], diffSize[ 2 ], diffSize[ 3 ] ) )
+	diff:add( nn.Reshape( numVideo * ( seqLength - diffScale ), diffSize[ 1 ], diffSize[ 2 ], diffSize[ 3 ] ) )
 	diff:cuda(  )
 	-- Load pre-trained CNN.
 	self:print( 'Load pre-trained Caffe feature.' )
@@ -356,6 +358,7 @@ function task:defineModel(  )
 	model:cuda(  )
 	-- Check options.
 	assert( self.opt.dropout <= 1 and self.opt.dropout >= 0 )
+	assert( diffScale < seqLength and diffScale > 0 )
 	assert( self.opt.numOut == 1 )
 	assert( self.opt.caffeInput )
 	assert( not self.opt.normalizeStd )
@@ -399,8 +402,9 @@ function task:getBatchTrain(  )
 	local cropSize = self.opt.cropSize
 	local numVideoToSample = batchSize / seqLength
 	local input = torch.Tensor( batchSize, 3, cropSize, cropSize )
-	local label = torch.LongTensor( batchSize )
 	local numVideo = self.dbtr.vid2path:size( 1 )
+	local diffScale = self.opt.diffScale
+	local label = torch.LongTensor( numVideoToSample, seqLength - diffScale )
 	local fcnt = 0
 	for v = 1, numVideoToSample do
 		local vid = torch.random( 1, numVideo )
@@ -416,12 +420,10 @@ function task:getBatchTrain(  )
 			local fpath = paths.concat( vpath, string.format( self.dbtr.frameFormat, fid ) )
 			fcnt = fcnt + 1
 			input[ fcnt ]:copy( self:processImageTrain( fpath, rw, rh, rf ) )
-			label[ fcnt ] = cid
 		end
+		label[ v ]:fill( cid )
 	end
-	label = label:reshape( numVideoToSample, seqLength ):narrow( 2, 1, seqLength - 1 )
-	label = label:reshape( ( seqLength - 1 ) * numVideoToSample )
-	return input, label
+	return input, label:view( -1 )
 end
 function task:getBatchVal( fidStart )
 	local seqLength = self.opt.seqLength
@@ -430,8 +432,9 @@ function task:getBatchVal( fidStart )
 	local vidStart = ( fidStart - 1 ) / seqLength + 1
 	local numVideoToSample = batchSize / seqLength
 	local input = torch.Tensor( batchSize, 3, cropSize, cropSize )
-	local label = torch.LongTensor( batchSize )
 	local numVideo = self.dbval.vid2path:size( 1 )
+	local diffScale = self.opt.diffScale
+	local label = torch.LongTensor( numVideoToSample, seqLength - diffScale )
 	local fcnt = 0
 	for v = 1, numVideoToSample do
 		local vid = vidStart + v - 1
@@ -444,30 +447,29 @@ function task:getBatchVal( fidStart )
 			local fpath = paths.concat( vpath, string.format( self.dbval.frameFormat, fid ) )
 			fcnt = fcnt + 1
 			input[ fcnt ]:copy( self:processImageVal( fpath ) )
-			label[ fcnt ] = cid
 		end
+		label[ v ]:fill( cid )
 	end
-	label = label:reshape( numVideoToSample, seqLength ):narrow( 2, 1, seqLength - 1 )
-	label = label:reshape( ( seqLength - 1 ) * numVideoToSample )
-	return input, label
+	return input, label:view( -1 )
 end
 function task:evalBatch( fid2out, fid2label )
 	if type( fid2out ) ~= 'table' then fid2out = { fid2out } end
 	local numOut = #fid2out
 	local seqLength = self.opt.seqLength
 	local batchSize = self.opt.batchSize
-	local numVideo = fid2out[ 1 ]:size( 1 ) / ( seqLength - 1 )
+	local diffScale = self.opt.diffScale
+	local numVideo = fid2out[ 1 ]:size( 1 ) / ( seqLength - diffScale )
 	local pooling = self.opt.videoPool
 	local oid2eval = torch.Tensor( numOut ):fill( 0 )
-	assert( batchSize == fid2label:numel(  ) + numVideo )
+	assert( batchSize == fid2label:numel(  ) + numVideo * diffScale )
 	assert( numVideo == batchSize / seqLength )
 	assert( numOut == self.opt.numOut )
 	for oid, out in pairs( fid2out ) do
 		local _, fid2pcid = out:float(  ):sort( 2, true )
 		local top1 = 0
 		for v = 1, numVideo do
-			local fs = ( v - 1 ) * ( seqLength - 1 ) + 1
-			local fe = fs + ( seqLength - 1 ) - 1
+			local fs = ( v - 1 ) * ( seqLength - diffScale ) + 1
+			local fe = fs + ( seqLength - diffScale ) - 1
 			assert( fid2label[ fs ] == fid2label[ fe ] )
 			local cid2score
 			if pooling == 'sum' then
