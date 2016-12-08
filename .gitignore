@@ -1,4 +1,4 @@
 *.swp
 *.sh
 .nfs*
-.out
+*.out
