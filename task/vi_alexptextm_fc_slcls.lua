@@ -173,8 +173,9 @@ function task:parseOption( arg )
 	cmd:option( '-hiddenSize', 256, 'Size of hidden layer.' )
 	cmd:option( '-videoPool', 'sum', 'Pooling method for frames per video' )
 	cmd:option( '-numOut', 1, 'Number of outputs from net.' )
-	cmd:option( '-diffLevel', 1, 'Conv layer id after which motions are extracted.' )
+	cmd:option( '-diffLevel', 1, 'Differentiator layer id. -1 for none.' )
 	cmd:option( '-diffScale', 1, 'Time scale for differentiation.' )
+	cmd:option( '-sumLevel', -1, 'Sum pooling layer id. -1 for none.' )
 	-- Train.
 	cmd:option( '-numEpoch', 50, 'Number of total epochs to run.' )
 	cmd:option( '-epochSize', 2384, 'Number of batches per epoch.' )
@@ -286,83 +287,178 @@ function task:defineModel(  )
 	local numClass = self.dbtr.cid2name:size( 1 )
 	local dropout = self.opt.dropout
 	local inputSize = self.opt.cropSize
+	local sumLevel = self.opt.sumLevel
 	local diffLevel = self.opt.diffLevel
 	local diffScale = self.opt.diffScale
-	local diffSize
-	local diffLayer
-	if diffLevel == 0 then
-		diffSize = torch.LongTensor{ 3, inputSize, inputSize }
-		diffLayer = 1
-	elseif diffLevel == 1 then
-		diffSize = torch.LongTensor{ 96, 54, 54 }
-		diffLayer = 3
-	elseif diffLevel == 2 then
-		diffSize = torch.LongTensor{ 256, 27, 27 }
-		diffLayer = 7
-	elseif diffLevel == 3 then
-		diffSize = torch.LongTensor{ 384, 13, 13 }
-		diffLayer = 11
-	elseif diffLevel == 4 then
-		diffSize = torch.LongTensor{ 384, 13, 13 }
-		diffLayer = 13
-	elseif diffLevel == 5 then
-		diffSize = torch.LongTensor{ 256, 13, 13 }
-		diffLayer = 15
-	end
-	assert( diffSize and diffLayer )
-	-- Create motion extractor.
-	local diff = nn.Sequential(  )
-	diff:add( nn.Reshape( numVideo, seqLength, diffSize:prod(  ) ) )
-	diff:add( nn.ConcatTable(  ):add( nn.Narrow( 2, 1 + diffScale, seqLength - diffScale ) ):add( nn.Narrow( 2, 1, seqLength - diffScale ) ) )
-	diff:add( nn.CSubTable(  ) )
-	diff:add( nn.Reshape( numVideo * ( seqLength - diffScale ), diffSize[ 1 ], diffSize[ 2 ], diffSize[ 3 ] ) )
-	diff:cuda(  )
-	-- Load pre-trained CNN.
-	self:print( 'Load pre-trained Caffe feature.' )
 	local proto = gpath.net.alex_caffe_proto
 	local caffemodel = gpath.net.alex_caffe_model
+	local seqLength2 = seqLength - diffScale
+	-- Check options.
+	if diffLevel == -1 then assert( diffScale == 0 ) end
+	if sumLevel >= 0 then assert( sumLevel >= diffLevel ) end
+	assert( diffLevel <= 7 )
+	assert( sumLevel <= 8 )
+	assert( diffScale < seqLength )
+	assert( dropout <= 1 and dropout >= 0 )
+	assert( self.opt.numOut == 1 )
+	assert( self.opt.caffeInput )
+	assert( not self.opt.normalizeStd )
+	assert( not self.opt.keepAspect )
+	-- Make initial model.
 	local features = loadcaffe.load( proto, caffemodel, self.opt.backend )
-	self:print( 'Done.' )
-	-- Insert motion extractor to features and remove FCs.
-	features:insert( diff, diffLayer )
-	features:remove(  )
-	features:remove(  )
-	features:remove(  )
-	features:remove(  )
-	features:remove(  )
-	features:remove(  )
+	features:remove(  ) -- removes SoftMax.
+	features:remove(  ) -- removes Linear.
+	features:remove(  ) -- removes Dropout.
+	features:remove(  ) -- removes ReLU.
+	features:remove(  ) -- removes Linear.
+	features:remove(  ) -- removes dropbout.
 	features:add( nn.Dropout( dropout ) )
 	features:cuda(  )
-	-- Create FC.
-	-- In:  ( numVideo X ( seqLength - 1 ) ), featSize
-	-- Out: ( numVideo X ( seqLength - 1 ) ), hiddenSize
 	local fc = nn.Sequential(  )
 	fc:add( nn.Linear( featSize, hiddenSize ) )
 	fc:add( nn.ReLU(  ) )
 	fc:add( nn.Dropout( dropout ) )
 	fc:cuda(  )
-	-- Create classifier.
-	-- In:  ( numVideo X ( seqLength - 1 ) ), hiddenSize
-	-- Out: ( numVideo X ( seqLength - 1 ) ), numClass
 	local classifier = nn.Sequential(  )
 	classifier:add( nn.Linear( hiddenSize, numClass ) )
 	classifier:add( nn.LogSoftMax(  ) )
 	classifier:cuda(  )
-	-- Combine sub models.
-	-- In:  ( numVideo X seqLength ), 3, 224, 224
-	-- Out: ( numVideo X ( seqLength - 1 ) ), numClass
 	local model = nn.Sequential(  )
 	model:add( features )
 	model:add( fc )
 	model:add( classifier )
 	model:cuda(  )
-	-- Check options.
-	assert( self.opt.dropout <= 1 and self.opt.dropout >= 0 )
-	assert( diffScale < seqLength and diffScale > 0 )
-	assert( self.opt.numOut == 1 )
-	assert( self.opt.caffeInput )
-	assert( not self.opt.normalizeStd )
-	assert( not self.opt.keepAspect )
+	-- Insert sumpooling if needed.
+	if sumLevel == 0 then
+		local sum = nn.Sequential(  )
+		sum:add( nn.Reshape( numVideo, seqLength2, 3 * inputSize * inputSize ) )
+		sum:add( nn.Mean( 2 ) )
+		sum:add( nn.Reshape( numVideo, 3, inputSize, inputSize ) )
+		sum:cuda(  )
+		model.modules[ 1 ]:insert( sum, 1 )
+	elseif sumLevel == 1 then
+		local sum = nn.Sequential(  )
+		sum:add( nn.Reshape( numVideo, seqLength2, 96 * 54 * 54 ) )
+		sum:add( nn.Mean( 2 ) )
+		sum:add( nn.Reshape( numVideo, 96, 54, 54 ) )
+		sum:cuda(  )
+		model.modules[ 1 ]:insert( sum, 3 )
+	elseif sumLevel == 2 then
+		local sum = nn.Sequential(  )
+		sum:add( nn.Reshape( numVideo, seqLength2, 256 * 27 * 27 ) )
+		sum:add( nn.Mean( 2 ) )
+		sum:add( nn.Reshape( numVideo, 256, 27, 27 ) )
+		sum:cuda(  )
+		model.modules[ 1 ]:insert( sum, 7 )
+	elseif sumLevel == 3 then
+		local sum = nn.Sequential(  )
+		sum:add( nn.Reshape( numVideo, seqLength2, 384 * 13 * 13 ) )
+		sum:add( nn.Mean( 2 ) )
+		sum:add( nn.Reshape( numVideo, 384, 13, 13 ) )
+		sum:cuda(  )
+		model.modules[ 1 ]:insert( sum, 11 )
+	elseif sumLevel == 4 then
+		local sum = nn.Sequential(  )
+		sum:add( nn.Reshape( numVideo, seqLength2, 384 * 13 * 13 ) )
+		sum:add( nn.Mean( 2 ) )
+		sum:add( nn.Reshape( numVideo, 384, 13, 13 ) )
+		sum:cuda(  )
+		model.modules[ 1 ]:insert( sum, 13 )
+	elseif sumLevel == 5 then
+		local sum = nn.Sequential(  )
+		sum:add( nn.Reshape( numVideo, seqLength2, 256 * 13 * 13 ) )
+		sum:add( nn.Mean( 2 ) )
+		sum:add( nn.Reshape( numVideo, 256, 13, 13 ) )
+		sum:cuda(  )
+		model.modules[ 1 ]:insert( sum, 15 )
+	elseif sumLevel == 6 then
+		local sum = nn.Sequential(  )
+		sum:add( nn.Reshape( numVideo, seqLength2, 4096 ) )
+		sum:add( nn.Mean( 2 ) )
+		sum:add( nn.Reshape( numVideo, 4096 ) )
+		sum:cuda(  )
+		model.modules[ 1 ]:insert( sum, 19 )
+	elseif sumLevel == 7 then
+		local sum = nn.Sequential(  )
+		sum:add( nn.Reshape( numVideo, seqLength2, hiddenSize ) )
+		sum:add( nn.Mean( 2 ) )
+		sum:add( nn.Reshape( numVideo, hiddenSize ) )
+		sum:cuda(  )
+		model.modules[ 2 ]:insert( sum, 3 )
+	elseif sumLevel == 8 then
+		local sum = nn.Sequential(  )
+		sum:add( nn.Reshape( numVideo, seqLength2, numClass ) )
+		sum:add( nn.Mean( 2 ) )
+		sum:add( nn.Reshape( numVideo, numClass ) )
+		sum:cuda(  )
+		model.modules[ 3 ]:insert( sum, 2 )
+	end
+	-- Insert differentiator if needed.
+	if diffLevel == 0 then
+		local diff = nn.Sequential(  )
+		diff:add( nn.Reshape( numVideo, seqLength, 3 * inputSize * inputSize ) )
+		diff:add( nn.ConcatTable(  ):add( nn.Narrow( 2, 1 + diffScale, seqLength2 ) ):add( nn.Narrow( 2, 1, seqLength2 ) ) )
+		diff:add( nn.CSubTable(  ) )
+		diff:add( nn.Reshape( numVideo * seqLength2, 3, inputSize, inputSize ) )
+		diff:cuda(  )
+		model.modules[ 1 ]:insert( diff, 1 )
+	elseif diffLevel == 1 then
+		local diff = nn.Sequential(  )
+		diff:add( nn.Reshape( numVideo, seqLength, 96 * 54 * 54 ) )
+		diff:add( nn.ConcatTable(  ):add( nn.Narrow( 2, 1 + diffScale, seqLength2 ) ):add( nn.Narrow( 2, 1, seqLength2 ) ) )
+		diff:add( nn.CSubTable(  ) )
+		diff:add( nn.Reshape( numVideo * seqLength2, 96, 54, 54 ) )
+		diff:cuda(  )
+		model.modules[ 1 ]:insert( diff, 3 )
+	elseif diffLevel == 2 then
+		local diff = nn.Sequential(  )
+		diff:add( nn.Reshape( numVideo, seqLength, 256 * 27 * 27 ) )
+		diff:add( nn.ConcatTable(  ):add( nn.Narrow( 2, 1 + diffScale, seqLength2 ) ):add( nn.Narrow( 2, 1, seqLength2 ) ) )
+		diff:add( nn.CSubTable(  ) )
+		diff:add( nn.Reshape( numVideo * seqLength2, 256, 27, 27 ) )
+		diff:cuda(  )
+		model.modules[ 1 ]:insert( diff, 7 )
+	elseif diffLevel == 3 then
+		local diff = nn.Sequential(  )
+		diff:add( nn.Reshape( numVideo, seqLength, 384 * 13 * 13 ) )
+		diff:add( nn.ConcatTable(  ):add( nn.Narrow( 2, 1 + diffScale, seqLength2 ) ):add( nn.Narrow( 2, 1, seqLength2 ) ) )
+		diff:add( nn.CSubTable(  ) )
+		diff:add( nn.Reshape( numVideo * seqLength2, 384, 13, 13 ) )
+		diff:cuda(  )
+		model.modules[ 1 ]:insert( diff, 11 )
+	elseif diffLevel == 4 then
+		local diff = nn.Sequential(  )
+		diff:add( nn.Reshape( numVideo, seqLength, 384 * 13 * 13 ) )
+		diff:add( nn.ConcatTable(  ):add( nn.Narrow( 2, 1 + diffScale, seqLength2 ) ):add( nn.Narrow( 2, 1, seqLength2 ) ) )
+		diff:add( nn.CSubTable(  ) )
+		diff:add( nn.Reshape( numVideo * seqLength2, 384, 13, 13 ) )
+		diff:cuda(  )
+		model.modules[ 1 ]:insert( diff, 13 )
+	elseif diffLevel == 5 then
+		local diff = nn.Sequential(  )
+		diff:add( nn.Reshape( numVideo, seqLength, 256 * 13 * 13 ) )
+		diff:add( nn.ConcatTable(  ):add( nn.Narrow( 2, 1 + diffScale, seqLength2 ) ):add( nn.Narrow( 2, 1, seqLength2 ) ) )
+		diff:add( nn.CSubTable(  ) )
+		diff:add( nn.Reshape( numVideo * seqLength2, 256, 13, 13 ) )
+		diff:cuda(  )
+		model.modules[ 1 ]:insert( diff, 15 )
+	elseif diffLevel == 6 then
+		local diff = nn.Sequential(  )
+		diff:add( nn.Reshape( numVideo, seqLength, 4096 ) )
+		diff:add( nn.ConcatTable(  ):add( nn.Narrow( 2, 1 + diffScale, seqLength2 ) ):add( nn.Narrow( 2, 1, seqLength2 ) ) )
+		diff:add( nn.CSubTable(  ) )
+		diff:add( nn.Reshape( numVideo * seqLength2, 4096 ) )
+		diff:cuda(  )
+		model.modules[ 1 ]:insert( diff, 19 )
+	elseif diffLevel == 7 then
+		local diff = nn.Sequential(  )
+		diff:add( nn.Reshape( numVideo, seqLength, hiddenSize ) )
+		diff:add( nn.ConcatTable(  ):add( nn.Narrow( 2, 1 + diffScale, seqLength2 ) ):add( nn.Narrow( 2, 1, seqLength2 ) ) )
+		diff:add( nn.CSubTable(  ) )
+		diff:add( nn.Reshape( numVideo * seqLength2, hiddenSize ) )
+		diff:cuda(  )
+		model.modules[ 2 ]:insert( diff, 3 )
+	end
 	return model
 end
 function task:defineCriterion(  )
@@ -404,7 +500,10 @@ function task:getBatchTrain(  )
 	local input = torch.Tensor( batchSize, 3, cropSize, cropSize )
 	local numVideo = self.dbtr.vid2path:size( 1 )
 	local diffScale = self.opt.diffScale
-	local label = torch.LongTensor( numVideoToSample, seqLength - diffScale )
+	local sumLevel = self.opt.sumLevel
+	local seqLengthOut
+	if sumLevel >= 0 then seqLengthOut = 1 else seqLengthOut = seqLength - diffScale end
+	local label = torch.LongTensor( numVideoToSample, seqLengthOut )
 	local fcnt = 0
 	for v = 1, numVideoToSample do
 		local vid = torch.random( 1, numVideo )
@@ -434,7 +533,10 @@ function task:getBatchVal( fidStart )
 	local input = torch.Tensor( batchSize, 3, cropSize, cropSize )
 	local numVideo = self.dbval.vid2path:size( 1 )
 	local diffScale = self.opt.diffScale
-	local label = torch.LongTensor( numVideoToSample, seqLength - diffScale )
+	local sumLevel = self.opt.sumLevel
+	local seqLengthOut
+	if sumLevel >= 0 then seqLengthOut = 1 else seqLengthOut = seqLength - diffScale end
+	local label = torch.LongTensor( numVideoToSample, seqLengthOut )
 	local fcnt = 0
 	for v = 1, numVideoToSample do
 		local vid = vidStart + v - 1
@@ -458,18 +560,21 @@ function task:evalBatch( fid2out, fid2label )
 	local seqLength = self.opt.seqLength
 	local batchSize = self.opt.batchSize
 	local diffScale = self.opt.diffScale
-	local numVideo = fid2out[ 1 ]:size( 1 ) / ( seqLength - diffScale )
+	local sumLevel = self.opt.sumLevel
+	local seqLengthOut
+	if sumLevel >= 0 then seqLengthOut = 1 else seqLengthOut = seqLength - diffScale end
+	local numVideo = fid2out[ 1 ]:size( 1 ) / seqLengthOut
 	local pooling = self.opt.videoPool
 	local oid2eval = torch.Tensor( numOut ):fill( 0 )
-	assert( batchSize == fid2label:numel(  ) + numVideo * diffScale )
+	assert( fid2label:numel(  ) == seqLengthOut * numVideo )
 	assert( numVideo == batchSize / seqLength )
 	assert( numOut == self.opt.numOut )
 	for oid, out in pairs( fid2out ) do
 		local _, fid2pcid = out:float(  ):sort( 2, true )
 		local top1 = 0
 		for v = 1, numVideo do
-			local fs = ( v - 1 ) * ( seqLength - diffScale ) + 1
-			local fe = fs + ( seqLength - diffScale ) - 1
+			local fs = ( v - 1 ) * seqLengthOut + 1
+			local fe = fs + seqLengthOut - 1
 			assert( fid2label[ fs ] == fid2label[ fe ] )
 			local cid2score
 			if pooling == 'sum' then
