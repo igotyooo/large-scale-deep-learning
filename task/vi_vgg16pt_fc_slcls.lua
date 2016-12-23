@@ -170,14 +170,13 @@ function task:parseOption( arg )
 	cmd:option( '-caffeInput', 1, '1 for caffe input, 0 for no.' )
 	-- Model.
 	cmd:option( '-dropout', 0.5, 'Dropout ratio.' )
-	cmd:option( '-hiddenSize', 256, 'Size of hidden layer.' )
 	cmd:option( '-videoPool', 'sum', 'Pooling method for frames per video' )
 	cmd:option( '-numOut', 1, 'Number of outputs from net.' )
 	-- Train.
 	cmd:option( '-numEpoch', 50, 'Number of total epochs to run.' )
-	cmd:option( '-epochSize', 4768, 'Number of batches per epoch.' )
-	cmd:option( '-batchSize', 128, 'Frame-level mini-batch size.' )
-	cmd:option( '-learnRate', '1e-3,1e-3,1e-3', 'Supports multi-lr for multi-module like "lr1,lr2,lr3".' )
+	cmd:option( '-epochSize', 2384, 'Number of batches per epoch. (numVideo*seqLength/batchSize)' )
+	cmd:option( '-batchSize', 64, 'Frame-level mini-batch size.' )
+	cmd:option( '-learnRate', '1e-3,1e-3', 'Supports multi-lr for multi-module like "lr1,lr2,lr3".' )
 	cmd:option( '-momentum', 0.9, 'Momentum.' )
 	cmd:option( '-weightDecay', 5e-4, 'Weight decay.' )
 	cmd:option( '-startFrom', '', 'Path to the initial model. Using it for LR decay is recommended.' )
@@ -278,7 +277,6 @@ function task:defineModel(  )
 	require 'loadcaffe'
 	-- Set params.
 	local featSize = 4096
-	local hiddenSize = 256
 	local numClass = self.dbtr.cid2name:size( 1 )
 	local dropout = self.opt.dropout
 	-- Load pre-trained CNN.
@@ -288,28 +286,19 @@ function task:defineModel(  )
 	local proto = gpath.net.vgg16_caffe_proto
 	local caffemodel = gpath.net.vgg16_caffe_model
 	local features = loadcaffe.load( proto, caffemodel, self.opt.backend )
-	features:remove(  )
-	features:remove(  )
-	features:remove(  )
-	features:remove(  )
-	features:remove(  )
-	features:remove(  ) -- Removes dropout.
+	features:remove( 40 ) -- removes softmax.
+	features:remove( 39 ) -- removes fc.
+	features:remove( 38 ) -- removes dropout.
+	features:remove( 35 ) -- removes dropout.
+	features:insert( nn.Dropout( dropout ), 35 )
 	features:add( nn.Dropout( dropout ) )
 	features:cuda(  )
 	features = makeDataParallel( features, self.opt.numGpu, 1 )
-	-- Create FC.
-	-- In:  ( numVideo X seqLength ), featSize
-	-- Out: ( numVideo X seqLength ), hiddenSize
-	local fc = nn.Sequential(  )
-	fc:add( nn.Linear( featSize, hiddenSize ) )
-	fc:add( nn.ReLU(  ) )
-	fc:add( nn.Dropout( dropout ) )
-	fc:cuda(  )
 	-- Create FC classifier.
-	-- In:  ( numVideo X seqLength ), hiddenSize
+	-- In:  ( numVideo X seqLength ), featSize
 	-- Out: ( numVideo X seqLength ), numClass
 	local classifierFc = nn.Sequential(  )
-	classifierFc:add( nn.Linear( hiddenSize, numClass ) )
+	classifierFc:add( nn.Linear( featSize, numClass ) )
 	classifierFc:add( nn.LogSoftMax(  ) )
 	classifierFc:cuda(  )
 	-- Combine sub models.
@@ -317,7 +306,6 @@ function task:defineModel(  )
 	-- Out: ( numVideo X seqLength ), numClass
 	local model = nn.Sequential(  )
 	model:add( features )
-	model:add( fc )
 	model:add( classifierFc )
 	model:cuda(  )
 	-- Check options.
@@ -333,8 +321,7 @@ end
 function task:groupParams( model )
 	local params, grads, optims = {  }, {  }, {  }
 	params[ 1 ], grads[ 1 ] = model.modules[ 1 ]:getParameters(  ) -- Features.
-	params[ 2 ], grads[ 2 ] = model.modules[ 2 ]:getParameters(  ) -- FC.
-	params[ 3 ], grads[ 3 ] = model.modules[ 3 ]:getParameters(  ) -- Classifier.
+	params[ 2 ], grads[ 2 ] = model.modules[ 2 ]:getParameters(  ) -- Classifier.
 	optims[ 1 ] = { -- Features.
 		learningRate = self.opt.learnRate[ 1 ],
 		learningRateDecay = 0.0,
@@ -342,15 +329,8 @@ function task:groupParams( model )
 		dampening = 0.0,
 		weightDecay = self.opt.weightDecay 
 	}
-	optims[ 2 ] = { -- FC.
+	optims[ 2 ] = { -- Classifier.
 		learningRate = self.opt.learnRate[ 2 ],
-		learningRateDecay = 0.0,
-		momentum = self.opt.momentum,
-		dampening = 0.0,
-		weightDecay = self.opt.weightDecay 
-	}
-	optims[ 3 ] = { -- Classifier.
-		learningRate = self.opt.learnRate[ 3 ],
 		learningRateDecay = 0.0,
 		momentum = self.opt.momentum,
 		dampening = 0.0,
