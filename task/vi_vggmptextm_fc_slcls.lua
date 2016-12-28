@@ -281,8 +281,9 @@ function task:defineModel(  )
 	-- Set params.
 	local featSize = 2048
 	local hiddenSize = self.opt.hiddenSize
+	local numGpu = self.opt.numGpu
 	local seqLength = self.opt.seqLength
-	local numVideo = self.opt.batchSize / seqLength
+	local numVideo = self.opt.batchSize / seqLength / numGpu
 	local numClass = self.dbtr.cid2name:size( 1 )
 	local dropout = self.opt.dropout
 	local inputSize = self.opt.cropSize
@@ -451,6 +452,7 @@ function task:defineModel(  )
 		diff:cuda(  )
 		model.modules[ 2 ]:insert( diff, 3 )
 	end
+	model = makeDataParallel( model, numGpu )
 	return model
 end
 function task:defineCriterion(  )
@@ -458,8 +460,13 @@ function task:defineCriterion(  )
 end
 function task:groupParams( model )
 	local params, grads, optims = {  }, {  }, {  }
-	params[ 1 ], grads[ 1 ] = model.modules[ 1 ]:getParameters(  ) -- Features.
-	params[ 2 ], grads[ 2 ] = model.modules[ 2 ]:getParameters(  ) -- Classifier.
+	if self.opt.numGpu > 1 then
+		params[ 1 ], grads[ 1 ] = model.modules[ 1 ].modules[ 1 ]:getParameters(  ) -- Features.
+		params[ 2 ], grads[ 2 ] = model.modules[ 1 ].modules[ 2 ]:getParameters(  ) -- Classifier.
+	else
+		params[ 1 ], grads[ 1 ] = model.modules[ 1 ]:getParameters(  ) -- Features.
+		params[ 2 ], grads[ 2 ] = model.modules[ 2 ]:getParameters(  ) -- Classifier.
+	end
 	optims[ 1 ] = { -- Features.
 		learningRate = self.opt.learnRate[ 1 ],
 		learningRateDecay = 0.0,
