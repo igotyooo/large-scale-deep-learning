@@ -213,7 +213,8 @@ function task:parseOption( arg )
 	for k,v in pairs( opt.learnRate ) do opt.learnRate[ k ] = tonumber( v ) end
 	-- Verification.
 	assert( opt.imageSize >= opt.cropSize )
-	assert( opt.batchSize % opt.seqLength == 0 )
+	assert( opt.batchSize % opt.numGpu == 0 )
+	assert( ( opt.batchSize / opt.numGpu ) % opt.seqLength == 0 )
 	assert( opt.numOut > 0 )
 	return opt
 end
@@ -296,6 +297,7 @@ function task:defineModel(  )
 	-- Check options.
 	if diffLevel == -1 then assert( diffScale == 0 ) end
 	if sumLevel >= 0 then assert( sumLevel >= diffLevel ) end
+	assert( numVideo % 1 == 0 )
 	assert( diffLevel <= 7 )
 	assert( sumLevel <= 8 )
 	assert( diffScale < seqLength )
@@ -377,14 +379,14 @@ function task:defineModel(  )
 		sum:add( nn.Mean( 2 ) )
 		sum:add( nn.Reshape( numVideo, featSize ) )
 		sum:cuda(  )
-		model.modules[ 2 ]:insert( sum, 3 )
+		model.modules[ 1 ]:insert( sum, 22 )
 	elseif sumLevel == 8 then
 		local sum = nn.Sequential(  )
 		sum:add( nn.Reshape( numVideo, seqLength2, numClass ) )
 		sum:add( nn.Mean( 2 ) )
 		sum:add( nn.Reshape( numVideo, numClass ) )
 		sum:cuda(  )
-		model.modules[ 3 ]:insert( sum, 2 )
+		model.modules[ 2 ]:insert( sum, 2 )
 	end
 	-- Insert differentiator if needed.
 	if diffLevel == 0 then
@@ -450,7 +452,7 @@ function task:defineModel(  )
 		diff:add( nn.CSubTable(  ) )
 		diff:add( nn.Reshape( numVideo * seqLength2, featSize ) )
 		diff:cuda(  )
-		model.modules[ 2 ]:insert( diff, 3 )
+		model.modules[ 1 ]:insert( diff, 22 )
 	end
 	model = makeDataParallel( model, numGpu )
 	return model
