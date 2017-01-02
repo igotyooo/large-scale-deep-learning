@@ -52,4 +52,4 @@ test.setDonkey( donkeys )
 test.setFunction( fun1, fun2, fun3 )
 
 -- Do the job.
-test.test( 0 )
+test.test(  )
