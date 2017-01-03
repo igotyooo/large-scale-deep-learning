@@ -166,7 +166,7 @@ function task:parseOption( arg )
 	cmd:option( '-cropSize', 224, 'Size of random square crop.' )
 	cmd:option( '-keepAspect', 0, '1 for keep, 0 for no.' )
 	cmd:option( '-normalizeStd', 0, '1 for normalize piexel std to 1, 0 for no.' )
-	cmd:option( '-seqLength', 16, 'Number of frames per input video' )
+	cmd:option( '-seqLength', 1, 'Number of frames per input video' )
 	cmd:option( '-caffeInput', 1, '1 for caffe input, 0 for no.' )
 	-- Model.
 	cmd:option( '-dropout', 0.5, 'Dropout ratio.' )
