@@ -33,7 +33,7 @@ function test.test(  )
 	for q = 1, test.numQuery do
 		test.donkeys:addjob(
 			function(  )
-				return getQuery( q )
+				return getQuery( q ), q
 			end, -- Job callback.
 			function( x, y )
 				answerQuery( x, y )
@@ -42,10 +42,10 @@ function test.test(  )
 	end
 	test.donkeys:synchronize(  )
 	cutorch.synchronize(  )
-	test.evaluate( test.answers )
+	test.evaluate( test.answers, test.qids[ 1 ] )
 	collectgarbage(  )
 end
-function test.answerQuery( query )
+function test.answerQuery( query, qid )
 	local dataTime = test.dataTimer:time(  ).real
 	local querySize = query:size( 1 )
 	local batchSize = test.batchSize
@@ -73,13 +73,14 @@ function test.answerQuery( query )
 	-- Aggregate answers.
 	local answer = test.aggregateAnswers( answers )
 	test.answers = test.concatenate( test.answers, answer )
+	test.qids = test.concatenate( test.qids, { torch.LongTensor{ qid } } )
 	local netTime = test.netTimer:time(  ).real
 	local totalTime = dataTime + netTime
 	local speed = querySize / totalTime
 	test.queryNumber = test.queryNumber + 1
 	-- Print information.
-	test.print( string.format( '%d/%d, %dim/s (data %.2fs, net %.2fs)', 
-		test.queryNumber, test.numQuery, speed, dataTime, netTime ) )
+	test.print( string.format( '%d/%d, qid %d, %dim/s (data %.2fs, net %.2fs)', 
+		test.queryNumber, test.numQuery, qid, speed, dataTime, netTime ) )
 	test.dataTimer:reset(  )
 	collectgarbage(  )
 end
