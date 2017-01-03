@@ -100,7 +100,7 @@ function task:getFunctionTest(  )
 	return
 		function( i ) return self:getQuery( i ) end,
 		function( x ) return self:aggregateAnswers( x ) end,
-		function( x ) return self:evaluate( x ) end
+		function( x, y ) return self:evaluate( x, y ) end
 end
 function task:getModel(  )
 	local numEpoch = self.opt.numEpoch
@@ -628,7 +628,7 @@ function task:getQuery( queryNumber )
 			end
 		end
 	end
-	assert( query:size( 1 ) % self.opt.batchSize % self.opt.numGpu % seqLength == 0 )
+	assert( query:size( 1 ) % self.opt.batchSize % ( self.opt.numGpu * seqLength ) == 0 )
 	return query
 end
 function task:aggregateAnswers( answers )
@@ -637,11 +637,13 @@ function task:aggregateAnswers( answers )
 	end
 	return answers
 end
-function task:evaluate( answers )
+function task:evaluate( answers, qids )
 	local numOut = #answers
 	local numQuery = answers[ 1 ]:size( 1 )
 	local numClass = self.dbval.cid2name:size( 1 )
 	local scores = {  }
+	assert( qids:numel(  ) == numQuery )
+	assert( qids:max(  ) == numQuery )
 	assert( self.dbval.vid2path:size( 1 ) == numQuery )
 	assert( numOut == self.opt.numOut and numOut == 1 )
 	for k, v in pairs( answers ) do
@@ -652,9 +654,10 @@ function task:evaluate( answers )
 		local qid2top1 = torch.Tensor( numQuery ):fill( 0 )
 		local cid2num = torch.Tensor( numClass ):fill( 0 )
 		local cid2top1 = torch.Tensor( numClass ):fill( 0 )
-		local _, qid2pcid = v:float(  ):sort( 2, true )
-		for qid = 1, numQuery do
-			local pcid = qid2pcid[ qid ][ 1 ]
+		local _, pcids = v:float(  ):sort( 2, true )
+		for q = 1, numQuery do
+			local qid = qids[ q ]
+			local pcid = pcids[ q ][ 1 ]
 			local cid = self.dbval.vid2cid[ qid ]
 			local vpath = ffi.string( torch.data( self.dbval.vid2path[ qid ] ) )
 			local score = 0
