@@ -604,9 +604,10 @@ function task:getQuery( queryNumber )
 			  { 0.0, 1.0, 0.0, 1.0, 0.5, 0.0, 1.0, 0.0, 1.0, 0.5 },
 			  { 0.0, 0.0, 1.0, 1.0, 0.5, 0.0, 0.0, 1.0, 1.0, 0.5 },
 			  { 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0 } }
+	augments = augments[ { {  }, { 5 } } ]:cat( augments[ { {  }, { 10 } } ], 2 )
 	local numAugment = augments:size( 2 )
 	local seqLength = self.opt.seqLength
-	local stride = seqLength
+	local stride = seqLength - 1
 	local cropSize = self.opt.cropSize
 	local vid = queryNumber
 	local vpath = ffi.string( torch.data( self.dbval.vid2path[ vid ] ) )
@@ -616,7 +617,7 @@ function task:getQuery( queryNumber )
 	local fcnt = 0
 	for seq = 1, numSeq do
 		local startFrame = 1 + stride * ( seq - 1 )
-		for a = 1, augments:size( 2 ) do
+		for a = 1, numAugment do
 			local rw = augments[ 1 ][ a ]
 			local rh = augments[ 2 ][ a ]
 			local rf = augments[ 3 ][ a ]
