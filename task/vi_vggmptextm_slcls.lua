@@ -114,6 +114,7 @@ function task:getModel(  )
 		local modelPath = pathModel:format( e )
 		local optimPath = pathOptim:format( e )
 		if not paths.filep( modelPath ) then startEpoch = e break end 
+		if e == numEpoch then self:print( 'All done.' ) os.exit(  ) end
 	end
 	local model, params, grads, optims
 	if startEpoch == 1 and startFrom:len(  ) == 0 then
