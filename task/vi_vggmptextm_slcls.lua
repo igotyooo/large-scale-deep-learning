@@ -186,6 +186,7 @@ function task:parseOption( arg )
 	cmd:option( '-numOut', 1, 'Number of outputs from net.' )
 	cmd:option( '-diffLevel', 1, 'Differentiator layer id. -1 for none.' )
 	cmd:option( '-diffScale', 1, 'Time scale for differentiation.' )
+	cmd:option( '-diffActive', 'none', 'Activation function for differentiator.' )
 	-- Train.
 	cmd:option( '-numEpoch', 50, 'Number of total epochs to run.' )
 	cmd:option( '-epochSize', 2384, 'Number of batches per epoch.' )
@@ -304,6 +305,7 @@ function task:defineModel(  )
 	local inputSize = self.opt.cropSize
 	local diffLevel = self.opt.diffLevel
 	local diffScale = self.opt.diffScale
+	local diffActive = self.opt.diffActive
 	local proto = gpath.net.vggm_caffe_proto
 	local caffemodel = gpath.net.vggm_caffe_model
 	local seqLength2 = seqLength - diffScale
@@ -356,6 +358,11 @@ function task:defineModel(  )
 		diff:add( nn.View( -1, seqLength, 96 * 109 * 109 ) )
 		diff:add( nn.ConcatTable(  ):add( nn.Narrow( 2, 1 + diffScale, seqLength2 ) ):add( nn.Narrow( 2, 1, seqLength2 ) ) )
 		diff:add( nn.CSubTable(  ) )
+		if diffActive == 'abs' then
+			diff:add( nn.Abs(  ) )
+		elseif diffActive == 'tanh' then
+			diff:add( nn.Tanh(  ) )
+		end
 		diff:add( nn.View( -1, seqLength2 * 96, 109, 109 ) )
 		diff:cuda(  )
 		if seqLength2 > 1 then
