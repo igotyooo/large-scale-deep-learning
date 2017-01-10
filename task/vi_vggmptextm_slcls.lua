@@ -186,7 +186,6 @@ function task:parseOption( arg )
 	cmd:option( '-numOut', 1, 'Number of outputs from net.' )
 	cmd:option( '-diffLevel', 1, 'Differentiator layer id. -1 for none.' )
 	cmd:option( '-diffScale', 1, 'Time scale for differentiation.' )
-	cmd:option( '-sumLevel', -1, 'Sum pooling layer id. -1 for none.' )
 	-- Train.
 	cmd:option( '-numEpoch', 50, 'Number of total epochs to run.' )
 	cmd:option( '-epochSize', 2384, 'Number of batches per epoch.' )
@@ -303,7 +302,6 @@ function task:defineModel(  )
 	local numClass = self.dbtr.cid2name:size( 1 )
 	local dropout = self.opt.dropout
 	local inputSize = self.opt.cropSize
-	local sumLevel = self.opt.sumLevel
 	local diffLevel = self.opt.diffLevel
 	local diffScale = self.opt.diffScale
 	local proto = gpath.net.vggm_caffe_proto
@@ -311,10 +309,8 @@ function task:defineModel(  )
 	local seqLength2 = seqLength - diffScale
 	-- Check options.
 	if diffLevel == -1 then assert( diffScale == 0 ) end
-	if sumLevel >= 0 then assert( sumLevel >= diffLevel ) end
 	assert( ( self.opt.batchSize / seqLength / numGpu ) % 1 == 0 )
 	assert( diffLevel <= 7 )
-	assert( sumLevel <= 8 )
 	assert( diffScale < seqLength )
 	assert( dropout <= 1 and dropout >= 0 )
 	assert( self.opt.numOut == 1 )
@@ -338,72 +334,15 @@ function task:defineModel(  )
 	model:add( features )
 	model:add( classifier )
 	model:cuda(  )
-	-- Insert sumpooling if needed.
-	if sumLevel == 0 then
-		local sum = nn.Sequential(  )
-		sum:add( nn.View( -1, seqLength2, 3 * inputSize * inputSize ) )
-		sum:add( nn.Mean( 2 ) )
-		sum:add( nn.View( -1, 3, inputSize, inputSize ) )
-		sum:cuda(  )
-		model.modules[ 1 ]:insert( sum, 1 )
-	elseif sumLevel == 1 then
-		local sum = nn.Sequential(  )
-		sum:add( nn.View( -1, seqLength2, 96 * 109 * 109 ) )
-		sum:add( nn.Mean( 2 ) )
-		sum:add( nn.View( -1, 96, 109, 109 ) )
-		sum:cuda(  )
-		model.modules[ 1 ]:insert( sum, 3 )
-	elseif sumLevel == 2 then
-		local sum = nn.Sequential(  )
-		sum:add( nn.View( -1, seqLength2, 256 * 26 * 26 ) )
-		sum:add( nn.Mean( 2 ) )
-		sum:add( nn.View( -1, 256, 26, 26 ) )
-		sum:cuda(  )
-		model.modules[ 1 ]:insert( sum, 7 )
-	elseif sumLevel == 3 then
-		local sum = nn.Sequential(  )
-		sum:add( nn.View( -1, seqLength2, 512 * 13 * 13 ) )
-		sum:add( nn.Mean( 2 ) )
-		sum:add( nn.View( -1, 512, 13, 13 ) )
-		sum:cuda(  )
-		model.modules[ 1 ]:insert( sum, 11 )
-	elseif sumLevel == 4 then
-		local sum = nn.Sequential(  )
-		sum:add( nn.View( -1, seqLength2, 512 * 13 * 13 ) )
-		sum:add( nn.Mean( 2 ) )
-		sum:add( nn.View( -1, 512, 13, 13 ) )
-		sum:cuda(  )
-		model.modules[ 1 ]:insert( sum, 13 )
-	elseif sumLevel == 5 then
-		local sum = nn.Sequential(  )
-		sum:add( nn.View( -1, seqLength2, 512 * 13 * 13 ) )
-		sum:add( nn.Mean( 2 ) )
-		sum:add( nn.View( -1, 512, 13, 13 ) )
-		sum:cuda(  )
-		model.modules[ 1 ]:insert( sum, 15 )
-	elseif sumLevel == 6 then
-		local sum = nn.Sequential(  )
-		sum:add( nn.View( -1, seqLength2, 4096 ) )
-		sum:add( nn.Mean( 2 ) )
-		sum:add( nn.View( -1, 4096 ) )
-		sum:cuda(  )
-		model.modules[ 1 ]:insert( sum, 19 )
-	elseif sumLevel == 7 then
-		local sum = nn.Sequential(  )
-		sum:add( nn.View( -1, seqLength2, featSize ) )
-		sum:add( nn.Mean( 2 ) )
-		sum:add( nn.View( -1, featSize ) )
-		sum:cuda(  )
-		model.modules[ 1 ]:insert( sum, 22 )
-	elseif sumLevel == 8 then
-		local sum = nn.Sequential(  )
-		sum:add( nn.View( -1, seqLength2, numClass ) )
-		sum:add( nn.Mean( 2 ) )
-		sum:add( nn.View( -1, numClass ) )
-		sum:cuda(  )
-		model.modules[ 2 ]:insert( sum, 2 )
-	end
 	-- Insert differentiator if needed.
+	local function copyParams( src, dst )
+		local srcw, srcg = src:parameters(  )
+		local dstw, dstg = dst:parameters(  )
+		dstw[ 1 ]:copy( srcw[ 1 ]:repeatTensor( 1, seqLength2, 1, 1 ):div( seqLength2 ) )
+		dstw[ 2 ]:copy( srcw[ 2 ] )
+		dstg[ 1 ]:copy( srcg[ 1 ]:repeatTensor( 1, seqLength2, 1, 1 ):div( seqLength2 ) )
+		dstg[ 2 ]:copy( srcg[ 2 ] )
+	end
 	if diffLevel == 0 then
 		local diff = nn.Sequential(  )
 		diff:add( nn.View( -1, seqLength, 3 * inputSize * inputSize ) )
@@ -417,8 +356,16 @@ function task:defineModel(  )
 		diff:add( nn.View( -1, seqLength, 96 * 109 * 109 ) )
 		diff:add( nn.ConcatTable(  ):add( nn.Narrow( 2, 1 + diffScale, seqLength2 ) ):add( nn.Narrow( 2, 1, seqLength2 ) ) )
 		diff:add( nn.CSubTable(  ) )
-		diff:add( nn.View( -1, 96, 109, 109 ) )
+		diff:add( nn.View( -1, seqLength2 * 96, 109, 109 ) )
 		diff:cuda(  )
+		if seqLength2 > 1 then
+			local target = 5
+			local vconv = cudnn.SpatialConvolution( 96 * seqLength2, 256, 5, 5, 2, 2, 1, 1, 1 )
+			copyParams( model.modules[ 1 ].modules[ target ], vconv )
+			vconv:cuda(  )
+			model.modules[ 1 ]:remove( target )
+			model.modules[ 1 ]:insert( vconv, target )
+		end
 		model.modules[ 1 ]:insert( diff, 3 )
 	elseif diffLevel == 2 then
 		local diff = nn.Sequential(  )
@@ -508,9 +455,7 @@ function task:getBatchTrain(  )
 	local input = torch.Tensor( batchSize, 3, cropSize, cropSize )
 	local numVideo = self.dbtr.vid2path:size( 1 )
 	local diffScale = self.opt.diffScale
-	local sumLevel = self.opt.sumLevel
-	local seqLengthOut
-	if sumLevel >= 0 then seqLengthOut = 1 else seqLengthOut = seqLength - diffScale end
+	local seqLengthOut = 1
 	local label = torch.LongTensor( numVideoToSample, seqLengthOut )
 	local fcnt = 0
 	for v = 1, numVideoToSample do
@@ -541,9 +486,7 @@ function task:getBatchVal( fidStart )
 	local input = torch.Tensor( batchSize, 3, cropSize, cropSize )
 	local numVideo = self.dbval.vid2path:size( 1 )
 	local diffScale = self.opt.diffScale
-	local sumLevel = self.opt.sumLevel
-	local seqLengthOut
-	if sumLevel >= 0 then seqLengthOut = 1 else seqLengthOut = seqLength - diffScale end
+	local seqLengthOut = 1
 	local label = torch.LongTensor( numVideoToSample, seqLengthOut )
 	local fcnt = 0
 	for v = 1, numVideoToSample do
@@ -568,9 +511,7 @@ function task:evalBatch( fid2out, fid2label )
 	local seqLength = self.opt.seqLength
 	local batchSize = self.opt.batchSize
 	local diffScale = self.opt.diffScale
-	local sumLevel = self.opt.sumLevel
-	local seqLengthOut
-	if sumLevel >= 0 then seqLengthOut = 1 else seqLengthOut = seqLength - diffScale end
+	local seqLengthOut = 1
 	local numVideo = fid2out[ 1 ]:size( 1 ) / seqLengthOut
 	local pooling = self.opt.videoPool
 	local oid2eval = torch.Tensor( numOut ):fill( 0 )
